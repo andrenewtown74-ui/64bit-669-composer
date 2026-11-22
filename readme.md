@@ -72,3 +72,128 @@ Ein nativer 64-Bit-Windows-Musiktracker im Stil des klassischen DOS-Trackers **C
 .\nasm.exe -f win64 c669main.asm -o c669main.obj
 .\GoLink.exe /entry start /fo c669main.exe c669main.obj kernel32.dll user32.dll gdi32.dll winmm.dll comdlg32.dll
 .\c669main.exe
+
+
+
+---
+
+## Projektstruktur
+
+| Datei | Beschreibung |
+|---|---|
+| `c669main.asm` | Haupteinstiegspunkt, Fenstererstellung, Borderless-Fullscreen-Logik, `WndProc` (inkl. Maus-Drag) und Hauptschleife |
+| `c669_defs.inc` | Konstanten, Windows-API-Importe (inkl. `waveIn`), `.data`-Tabellen, Hilfetexte und `.bss`-Speicherlayout (inkl. 64-Slot-Speicher & Original-Sample-Puffer) |
+| `c669_audio.inc` | 8-Kanal-Stereo-Mixer (Synth + 64-Slot-PCM), alle 669-Effekte (`a`–`f`) und WinMM-Pufferverwaltung |
+| `c669_io.inc` | `.669`-Parser/Exporter, WAV-Importer, Slot-Original-Backup und Löschroutinen mit Sicherheitsabfrage |
+| `c669_ui.inc` | GDI-Renderer, Scroll-Logik, Tastatur-, Maus-, Copy/Paste-, Moduswechsel- und Hilfe-Overlay-Steuerung |
+| `c669_samped.inc` | Sample- & Instrument-Editor (Wellenform, ziehbare Loop-Marker, `waveIn`-Streaming mit Gerätewahl & Live-VU, destruktive FX, zerstörungsfreie Sample-FX und Live-ADSR-Synth pro Slot) |
+| `c669_demo.inc` | 320×200-Framebuffer-Visualizer (Plasma, 3D-Tunnel, Rasterbars, Oszilloskop, Equalizer, Scroller) |
+
+---
+
+## Build & Voraussetzungen
+
+### Benötigte Werkzeuge (Windows x64)
+* **NASM** (`nasm.exe`, 64-Bit-Assembler)
+* **GoLink** (`GoLink.exe`, Windows-Linker ohne CRT-Abhängigkeit)
+
+### Kompilieren und Linken (PowerShell)
+```powershell
+.\nasm.exe -f win64 c669main.asm -o c669main.obj
+.\GoLink.exe /entry start /fo c669main.exe c669main.obj kernel32.dll user32.dll gdi32.dll winmm.dll comdlg32.dll
+.\c669main.exe
+
+```
+
+
+## Bedienung
+
+### Wiedergabe & Navigation
+
+| Taste | Funktion |
+| --- | --- |
+| `Leertaste` | Wiedergabe ab Cursorzeile starten / sofort stoppen |
+| `F5` | Wiedergabe ab Pattern- bzw. Song-Anfang starten |
+| `F6` | Modus umschalten (`PAT-LOOP` / `SONG-ORD`) |
+| `Pfeiltasten` / `Tab` | Cursor im Pattern-Grid bewegen / nächster Kanal |
+| `Pos1` / `Ende` | Zu Zeile `00` / zur Break-Zeile springen |
+| `Bild Auf` / `Bild Ab` | Pattern wechseln (`00..7F`) |
+| `Alt + Enter` / `Strg + F` | Borderless Fullscreen umschalten |
+| `Strg + H` / `[?]` | Tasten- und Maushilfe öffnen / schließen |
+| `ESC` | Hilfe, Sample-Editor oder Demo schließen; im Tracker Programm beenden |
+
+### Editor, Klaviatur & Samples
+
+| Taste | Funktion |
+| --- | --- |
+| `Y..M` / `Q..I` | QWERTZ-Klaviatur (2 Oktaven mit Live-Vorhören im Tracker und Sample-Editor) |
+| `0–9` / `A–F` | Instrument (`00..3F`), Lautstärke (`0..F`) und Effekte (`a..f`) eingeben |
+| `Entf` / `Rückschritt` | Aktives Feld bzw. vorherige Zelle löschen |
+| `F1` / `F2` | Klaviatur-Oktave verringern / erhöhen |
+| `F3` / `F4` | Sample-Slot / Instrument auswählen (`00..3F`) |
+| `F7` / `F8` | Tempo verringern / erhöhen (`1..F`) |
+| `F9` | Edit-Step umschalten (`1`, `2`, `4`, `0`) |
+| `F10` | Aktiven Kanal stummschalten (`On` / `Off`) |
+| `Strg + B` / `[Brk]` | Pattern-Break auf aktuelle Cursorzeile setzen |
+| `Strg + C` / `Strg + V` | Aktuelle Spur (64 Zeilen) kopieren / einfügen (`[SpC]` / `[SpV]`) |
+| `Strg + Shift + C` / `V` | Komplettes Pattern inkl. Break & Tempo kopieren / einfügen (`[PtC]` / `[PtV]`) |
+
+### Dateien, Sample-Editor, Löschfunktionen & 4K-Demo
+
+| Taste | Funktion |
+| --- | --- |
+| `Strg + O` / `F11` | `.669`-Modul laden |
+| `Strg + S` / `F12` | `.669`-Modul speichern |
+| `Strg + W` / `Einfg` | `.wav`-Sample auf aktiven Slot (`00..3F`) laden |
+| `Strg + E` / `[I]` | Sample- & Instrument-Editor öffnen / schließen (REC, FX, Sample-FX, Live-ADSR) |
+| `Strg + L` | Sample-Loop für aktiven PCM-Slot umschalten |
+| `Strg + U` | Aktiven Slot leeren / auf internen Synth zurücksetzen |
+| `Strg + Entf` / `[Akt.Pat]` | Aktuelles Pattern leeren (mit Abfrage) |
+| `Strg + Shift + P` / `[Alle Pat]` | Alle 128 Patterns & Orders leeren (mit Abfrage) |
+| `Strg + Shift + I` / `[Alle Inst]` | Alle 64 Sample-Slots leeren (mit Abfrage) |
+| `Strg + N` / `[Alles/Neu]` | Kompletten Song zurücksetzen (mit Abfrage) |
+| `Strg + D` / `[D]` | 4K-Demo-Visualizer starten (`Tab` / Mausrad wechselt Effekt, Linksklick zurück, Rechtsklick Play/Stop) |
+
+### Maussteuerung im Tracker
+
+* **Pattern-Grid:** Linksklick setzt Cursor, Rechtsklick spielt Zelle vor, Mausrad scrollt.
+* **Zeilennummer / Seitenbalken:** Linksklick springt zur Zeile, Rechtsklick setzt den Pattern-Break.
+* **Kanal-Köpfe (`On`/`Off`):** Linksklick schaltet Kanal sofort stumm/aktiv.
+* **Sample-Liste (`00..3F`):** Linksklick wählt Slot, Rechtsklick spielt Vorschau, Mausrad scrollt.
+* **Order-Liste (`00..7F`):** Linksklick öffnet Pattern, Rechtsklick startet Song-Wiedergabe ab diesem Order, Mausrad scrollt.
+* **Aktions- & Fußzeile:** Zeile 48 für Lösch- und Copy/Paste-Buttons; Zeile 49 für `Tmp`, `Oct`, `Ch`, `Pat`, `Ins`, `Stp` (Linksklick `+`, Rechtsklick `-`) sowie `[SPACE=Play]`, `[Brk]`, `[I]`, `[D]` und `[?]`.
+
+### Steuerung im Sample- & Instrument-Editor (`[I]` / `Strg + E`)
+
+* **Wellenform:**
+* Bei aktivem Loop lassen sich der weiße Loop-Start-Strich (**`L`** oben) und der pinke Loop-Ende-Strich (**`E`** unten) direkt mit gedrückter linker Maustaste greifen und verschieben.
+* Außerhalb der Loop-Marker setzt ein Linksklick den Auswahl-Start und ein Rechtsklick das Auswahl-Ende (`Shift + Links/Rechts` setzt Loop-Start/-Ende direkt an die Klickposition).
+
+
+* **Aktionsleiste:** `[WAV Laden]`, `[REC Start]` / `[REC Stop!]`, `[Vorhoeren]`, `[StopTon]`, `[Loop:ON]` / `[LoopOFF]`, `[Sel->Lp]` (Auswahl als Loop übernehmen), `[Trim]`, `[Syn]` (Slot auf Standard-Synth/leer zurücksetzen).
+* **Effektleiste (`FX`):** `[Normalis]`, `[Fade In]`, `[FadeOut]`, `[Reverse]`, `[Boost +]`, `[HalbLen]`, `[SelAll]`.
+* **Instrument-Designer (9 Live-Slider pro Slot):**
+* **Slider (`Attack` bis `Lautstaerk`):** Direkt im Balken klicken und mit gedrückter linker Maustaste ziehen oder über `[-]`/`[+]` feinjustieren. Bei aktivem `[LIVE:AN ]` wird das Ergebnis sofort gerendert und beim Loslassen vorgehört.
+* **Modus & Steuerung:** `[MOD:SYNTH ]` / `[MOD:SAMPLE]` wechselt zwischen Oszillator-Synthese und zerstörungsfreier Bearbeitung geladener Samples; `[LIVE:AN ]` schaltet Sofort-Rendering um; `[AUTOLP:AN ]` setzt automatische Sustain-Loops; `[-> Slot]` rendert manuell; `[Slot -]` / `[Slot +]` wechselt den Slot; `[Orig ]` stellt bei geladenen/aufgenommenen Samples das unbearbeitete Original wieder her.
+* **Wellenform & Presets:** Im `MOD:SYNTH` lassen sich `0:Sinus` bis `4:Rausc`, `Pulsbreite` (Links-/Rechtsklick) und die 6 Presets (`808Kick` bis `LaserFX`) direkt anwählen.
+
+
+* **Aufnahmeleiste (Zeile 47):** `[<]` / `[>]` oder Klick auf den Gerätenamen wählt das Eingabegerät (`Mic:`), daneben laufen der 3-Zonen-Live-VU-Pegelbalken mit Peak-Hold und die Aufnahmezeit (`0.0/5.9` s).
+* **Slot-Wechsel:** Mausrad, `F3`/`F4`, Kopfzeile (`Slot:XX`), `[Slot -]` / `[Slot +]` oder Fußzeile.
+
+---
+
+## Composer-669-Effekte
+
+| Code | Effekt | Beschreibung |
+| --- | --- | --- |
+| `aX` | Pitch Slide Up | Zieht die Tonhöhe kontinuierlich proportional nach oben (`a0` pausiert) |
+| `bX` | Pitch Slide Down | Zieht die Tonhöhe kontinuierlich proportional nach unten (`b0` pausiert) |
+| `cX` | Portamento to Note | Gleitet ohne Sample-Retrigger auf die angegebene Zielnote |
+| `dX` | Frequency Adjust | Einmalige Frequenzverschiebung / Detune (`d0` stellt Basis-Tonhöhe wieder her) |
+| `eX` | Vibrato | Sinusförmige Tonhöhenmodulation um die Basis-Tonhöhe (`e0` beendet Vibrato) |
+| `fX` | Set Tempo | Setzt das Abspieltempo sofort auf `1..F` |
+
+```
+
+```
