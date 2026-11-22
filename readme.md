@@ -1,5 +1,5 @@
 # Composer 669 x64 Tracker
-
+<img width="1446" height="945" alt="image" src="https://github.com/user-attachments/assets/4c7cf9b3-7026-4590-9aac-ac0dfdd6c04d" />
 Ein nativer 64-Bit-Windows-Musiktracker im Stil des klassischen DOS-Trackers **Composer 669**, vollständig in reinem x64-Assembler (NASM) ohne C-Runtime (CRT) und ohne externe Bibliotheken entwickelt. Die Anwendung nutzt ausschließlich direkte Windows-API-Aufrufe (`kernel32`, `user32`, `gdi32`, `winmm`, `comdlg32`) und kombiniert einen vollständigen 8-Kanal-Tracker mit einem integrierten 4K-Demoscene-Visualizer.
 
 ---
@@ -51,3 +51,4 @@ Ein nativer 64-Bit-Windows-Musiktracker im Stil des klassischen DOS-Trackers **C
 .\nasm.exe -f win64 c669main.asm -o c669main.obj
 .\GoLink.exe /entry start /fo c669main.exe c669main.obj kernel32.dll user32.dll gdi32.dll winmm.dll comdlg32.dll
 .\c669main.exe
+
