@@ -1,4 +1,4 @@
-; GDI-Darstellung, scrollende 64-Zeilen/128-Order/64-Sample-Ansicht, Tastatur-, Maus-, Hilfe- und Demo-UI
+; GDI-Darstellung, scrollende 64-Zeilen/128-Order/64-Sample-Ansicht, Tastatur-, Maus-, Copy/Paste-, Loesch-, Hilfe- und Demo-UI
 
 ; Byte AL als 2 Hex-Zeichen nach [R8] schreiben
 fmt_hex2:
@@ -225,6 +225,162 @@ toggle_demo_mode:
     ret
 
 ; ============================================================================
+; Copy/Paste fuer einzelne Spuren (64 Zeilen) und ganze Patterns (8x64 Zeilen)
+; ============================================================================
+
+; Aktuelle Spur (curCh im curPat, 64 Zeilen) in clipChBuf kopieren
+copy_cur_channel:
+    push rsi
+    push rdi
+    sub rsp, 0x28
+
+    mov eax, [curPat]
+    and eax, MAX_PATS - 1
+    shl eax, 11
+    mov ecx, [curCh]
+    and ecx, 7
+    shl ecx, 2
+    add eax, ecx
+    lea rsi, [patterns]
+    add rsi, rax
+    lea rdi, [clipChBuf]
+
+    mov ecx, PAT_ROWS
+.ccc_loop:
+    mov eax, [rsi]
+    mov [rdi], eax
+    add rsi, ROW_BYTES
+    add rdi, CELL_SIZE
+    dec ecx
+    jnz .ccc_loop
+
+    mov dword [clipChValid], 1
+    lea rcx, [stCpCh]
+    call set_status
+    mov dword [dirty], 1
+
+    add rsp, 0x28
+    pop rdi
+    pop rsi
+    ret
+
+; Kopierte Spur aus clipChBuf in aktuellen Kanal (curCh im curPat) einfuegen
+paste_cur_channel:
+    push rsi
+    push rdi
+    sub rsp, 0x28
+
+    cmp dword [clipChValid], 0
+    jne .pcc_do
+    lea rcx, [stNoClip]
+    call set_status
+    mov dword [dirty], 1
+    jmp .pcc_done
+
+.pcc_do:
+    mov eax, [curPat]
+    and eax, MAX_PATS - 1
+    shl eax, 11
+    mov ecx, [curCh]
+    and ecx, 7
+    shl ecx, 2
+    add eax, ecx
+    lea rdi, [patterns]
+    add rdi, rax
+    lea rsi, [clipChBuf]
+
+    mov ecx, PAT_ROWS
+.pcc_loop:
+    mov eax, [rsi]
+    mov [rdi], eax
+    add rsi, CELL_SIZE
+    add rdi, ROW_BYTES
+    dec ecx
+    jnz .pcc_loop
+
+    lea rcx, [stPsCh]
+    call set_status
+    mov dword [dirty], 1
+
+.pcc_done:
+    add rsp, 0x28
+    pop rdi
+    pop rsi
+    ret
+
+; Komplettes Pattern (curPat, 8x64 Zellen + Break + Tempo) in clipPatBuf kopieren
+copy_cur_pattern:
+    push rsi
+    push rdi
+    sub rsp, 0x28
+
+    mov eax, [curPat]
+    and eax, MAX_PATS - 1
+    lea rdx, [patBreaks]
+    movzx ecx, byte [rdx + rax]
+    mov [clipPatBreak], ecx
+    lea rdx, [patTempos]
+    movzx ecx, byte [rdx + rax]
+    mov [clipPatTempo], ecx
+
+    shl eax, 11
+    lea rsi, [patterns]
+    add rsi, rax
+    lea rdi, [clipPatBuf]
+    mov ecx, PAT_BYTES / 4
+    rep movsd
+
+    mov dword [clipPatValid], 1
+    lea rcx, [stCpPat]
+    call set_status
+    mov dword [dirty], 1
+
+    add rsp, 0x28
+    pop rdi
+    pop rsi
+    ret
+
+; Kopiertes Pattern aus clipPatBuf inkl. Break und Tempo in curPat einfuegen
+paste_cur_pattern:
+    push rsi
+    push rdi
+    sub rsp, 0x28
+
+    cmp dword [clipPatValid], 0
+    jne .pcp_do
+    lea rcx, [stNoClip]
+    call set_status
+    mov dword [dirty], 1
+    jmp .pcp_done
+
+.pcp_do:
+    mov eax, [curPat]
+    and eax, MAX_PATS - 1
+    mov ecx, [clipPatBreak]
+    lea rdx, [patBreaks]
+    mov [rdx + rax], cl
+    mov ecx, [clipPatTempo]
+    lea rdx, [patTempos]
+    mov [rdx + rax], cl
+
+    shl eax, 11
+    lea rdi, [patterns]
+    add rdi, rax
+    lea rsi, [clipPatBuf]
+    mov ecx, PAT_BYTES / 4
+    rep movsd
+
+    lea rcx, [stPsPat]
+    call set_status
+    mov dword [dirty], 1
+
+.pcp_done:
+    add rsp, 0x28
+    pop rdi
+    pop rsi
+    ret
+
+; ============================================================================
 ; Tastatur-Handler: ECX=wParam (VK), EDX=lParam
 ; ============================================================================
 handle_keydown:
@@ -256,7 +412,7 @@ handle_keydown:
     jmp .k_done
 .kd_norm:
 
-    ; Strg-Kombinationen: O=Laden, S=Speichern, W=WAV, L=Loop, U=Reset, F=FS, B=Break, H=Hilfe, D=Demo
+    ; Strg-Kombinationen inkl. Copy/Paste (C/V, Shift+C/V) und Loeschfunktionen
     mov ecx, VK_CONTROL
     call GetKeyState
     test ax, 0x8000
@@ -279,6 +435,62 @@ handle_keydown:
     je .do_help
     cmp ebx, 'D'
     je .do_demo
+    cmp ebx, 'N'
+    je .do_clr_all
+    cmp ebx, 'C'
+    je .chk_ctrl_c
+    cmp ebx, 'V'
+    je .chk_ctrl_v
+    cmp ebx, VK_DELETE
+    je .do_clr_pat
+    cmp ebx, 'P'
+    je .chk_ctrl_shift_p
+    cmp ebx, 'I'
+    je .chk_ctrl_shift_i
+    jmp .k_done
+
+.chk_ctrl_c:
+    test esi, 0x40000000
+    jnz .k_done
+    cmp dword [demoMode], 0
+    jne .k_done
+    mov ecx, VK_SHIFT
+    call GetKeyState
+    test ax, 0x8000
+    jnz .do_cp_pat
+    call copy_cur_channel
+    jmp .k_done
+.do_cp_pat:
+    call copy_cur_pattern
+    jmp .k_done
+
+.chk_ctrl_v:
+    test esi, 0x40000000
+    jnz .k_done
+    cmp dword [demoMode], 0
+    jne .k_done
+    mov ecx, VK_SHIFT
+    call GetKeyState
+    test ax, 0x8000
+    jnz .do_ps_pat
+    call paste_cur_channel
+    jmp .k_done
+.do_ps_pat:
+    call paste_cur_pattern
+    jmp .k_done
+
+.chk_ctrl_shift_p:
+    mov ecx, VK_SHIFT
+    call GetKeyState
+    test ax, 0x8000
+    jnz .do_clr_pats
+    jmp .k_done
+
+.chk_ctrl_shift_i:
+    mov ecx, VK_SHIFT
+    call GetKeyState
+    test ax, 0x8000
+    jnz .do_clr_inst
     jmp .k_done
 
 .no_ctrl:
@@ -348,6 +560,30 @@ handle_keydown:
     test esi, 0x40000000
     jnz .k_done
     call toggle_demo_mode
+    jmp .k_done
+
+.do_clr_pat:
+    test esi, 0x40000000
+    jnz .k_done
+    call clear_cur_pattern
+    jmp .k_done
+
+.do_clr_pats:
+    test esi, 0x40000000
+    jnz .k_done
+    call clear_all_patterns
+    jmp .k_done
+
+.do_clr_inst:
+    test esi, 0x40000000
+    jnz .k_done
+    call clear_all_instruments
+    jmp .k_done
+
+.do_clr_all:
+    test esi, 0x40000000
+    jnz .k_done
+    call clear_all_song
     jmp .k_done
 
 .chk_esc:
@@ -1014,9 +1250,9 @@ handle_mouse_down:
 .md_chk_pat:
     ; Pattern-Bereich (Zeilen 16..47)
     cmp r13d, 16
-    jb .md_chk_bot
+    jb .md_chk_clr
     cmp r13d, 47
-    ja .md_chk_bot
+    ja .md_chk_clr
 
     mov eax, r13d
     sub eax, 16
@@ -1075,12 +1311,81 @@ handle_mouse_down:
     call trigger_channel
     jmp .md_done
 
+.md_chk_clr:
+    ; Aktions-Leiste (Zeile 48, nur Linksklick): Loeschen + Copy/Paste
+    cmp r13d, 48
+    jne .md_chk_bot
+    test ebx, ebx
+    jnz .md_done
+
+    cmp r12d, 11
+    jb .md_done
+    cmp r12d, 19
+    ja .md_clr_pats
+    call clear_cur_pattern
+    jmp .md_done
+
+.md_clr_pats:
+    cmp r12d, 21
+    jb .md_done
+    cmp r12d, 30
+    ja .md_clr_inst
+    call clear_all_patterns
+    jmp .md_done
+
+.md_clr_inst:
+    cmp r12d, 32
+    jb .md_done
+    cmp r12d, 42
+    ja .md_clr_all
+    call clear_all_instruments
+    jmp .md_done
+
+.md_clr_all:
+    cmp r12d, 44
+    jb .md_done
+    cmp r12d, 54
+    ja .md_btn_spc
+    call clear_all_song
+    jmp .md_done
+
+.md_btn_spc:
+    cmp r12d, 56
+    jb .md_done
+    cmp r12d, 60
+    ja .md_btn_spv
+    call copy_cur_channel
+    jmp .md_done
+
+.md_btn_spv:
+    cmp r12d, 62
+    jb .md_done
+    cmp r12d, 66
+    ja .md_btn_ptc
+    call paste_cur_channel
+    jmp .md_done
+
+.md_btn_ptc:
+    cmp r12d, 68
+    jb .md_done
+    cmp r12d, 72
+    ja .md_btn_ptv
+    call copy_cur_pattern
+    jmp .md_done
+
+.md_btn_ptv:
+    cmp r12d, 74
+    jb .md_done
+    cmp r12d, 78
+    ja .md_done
+    call paste_cur_pattern
+    jmp .md_done
+
 .md_chk_bot:
     ; Fusszeile (Zeile 49): Werte (L=+/R=-), Play, Break, Demo [D] und Hilfe [?]
     cmp r13d, 49
     jne .md_done
 
-    ; Hilfe-Schaltflaeche [?] (Spalten 76..78)
     cmp r12d, 76
     jb .md_bot_demo
     cmp r12d, 78
@@ -1089,7 +1394,6 @@ handle_mouse_down:
     jmp .md_done
 
 .md_bot_demo:
-    ; Demo-Schaltflaeche [D] (Spalten 72..74)
     cmp r12d, 72
     jb .md_bot_tmp
     cmp r12d, 74
@@ -1443,28 +1747,28 @@ format_cell_text:
     ret
 
 ; ============================================================================
-; Hilfe-Overlay mittig in memDC zeichnen (Spalten 7..72, Zeilen 8..39)
+; Hilfe-Overlay mittig in memDC zeichnen (Spalten 7..72, Zeilen 6..41)
 ; ============================================================================
 draw_help_overlay:
     push rbx
     sub rsp, 0x20
 
     mov ecx, 7 * CHAR_W
-    mov edx, 8 * CHAR_H
+    mov edx, 6 * CHAR_H
     mov r8d, 66 * CHAR_W
-    mov r9d, 32 * CHAR_H
+    mov r9d, 36 * CHAR_H
     mov r10d, COL_HDR_ON
     call fill_rect
 
     mov ecx, 7 * CHAR_W + 3
-    mov edx, 8 * CHAR_H + 3
+    mov edx, 6 * CHAR_H + 3
     mov r8d, 66 * CHAR_W - 6
-    mov r9d, 32 * CHAR_H - 6
+    mov r9d, 36 * CHAR_H - 6
     mov r10d, COL_BLACK
     call fill_rect
 
     mov ecx, 8 * CHAR_W
-    mov edx, 9 * CHAR_H
+    mov edx, 7 * CHAR_H
     mov r8d, 64 * CHAR_W
     mov r9d, CHAR_H
     mov r10d, COL_PURP
@@ -1480,15 +1784,15 @@ draw_help_overlay:
 .hl_c1:
     cmp ebx, 1
     je .hl_teal
-    cmp ebx, 28
+    cmp ebx, 32
     je .hl_teal
     cmp ebx, 2
     je .hl_purp
     cmp ebx, 9
     je .hl_purp
-    cmp ebx, 19
+    cmp ebx, 21
     je .hl_purp
-    cmp ebx, 29
+    cmp ebx, 33
     jne .hl_draw
     mov r10d, COL_CYAN
     jmp .hl_draw
@@ -1504,7 +1808,7 @@ draw_help_overlay:
     lea r8, [helpLines]
     add r8, rax
     mov ecx, 8
-    lea edx, [rbx + 9]
+    lea edx, [rbx + 7]
     mov r9d, 64
     call draw_text
 
@@ -1536,7 +1840,6 @@ draw_screen:
     call sync_play_scroll
 .ds_no_follow:
 
-    ; Bei aktivem Demo-Modus Visualizer rendern und direkt ausgeben
     cmp dword [demoMode], 0
     je .ds_tracker
     call draw_demo_frame
@@ -2081,6 +2384,136 @@ draw_screen:
     cmp r12d, VIEW_ROWS
     jb .row_draw
 
+    ; Loesch-Leiste (Zeile 48): Label + 4 Loesch-Schaltflaechen
+    mov ecx, 1
+    mov edx, 48
+    lea r8, [clrBar + 1]
+    mov r9d, 9
+    mov r10d, COL_TEAL
+    call draw_text
+
+    mov ecx, 11 * CHAR_W
+    mov edx, 48 * CHAR_H
+    mov r8d, 9 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_HDR_OFF
+    call fill_rect
+    mov ecx, 11
+    mov edx, 48
+    lea r8, [clrBar + 11]
+    mov r9d, 9
+    mov r10d, COL_WHITE
+    call draw_text
+
+    mov ecx, 21 * CHAR_W
+    mov edx, 48 * CHAR_H
+    mov r8d, 10 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_HDR_OFF
+    call fill_rect
+    mov ecx, 21
+    mov edx, 48
+    lea r8, [clrBar + 21]
+    mov r9d, 10
+    mov r10d, COL_WHITE
+    call draw_text
+
+    mov ecx, 32 * CHAR_W
+    mov edx, 48 * CHAR_H
+    mov r8d, 11 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_HDR_OFF
+    call fill_rect
+    mov ecx, 32
+    mov edx, 48
+    lea r8, [clrBar + 32]
+    mov r9d, 11
+    mov r10d, COL_WHITE
+    call draw_text
+
+    mov ecx, 44 * CHAR_W
+    mov edx, 48 * CHAR_H
+    mov r8d, 11 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_PURP
+    call fill_rect
+    mov ecx, 44
+    mov edx, 48
+    lea r8, [clrBar + 44]
+    mov r9d, 11
+    mov r10d, COL_WHITE
+    call draw_text
+
+    ; Copy/Paste-Schaltflaechen in Zeile 48: [SpC] [SpV] [PtC] [PtV]
+    mov ecx, 56 * CHAR_W
+    mov edx, 48 * CHAR_H
+    mov r8d, 5 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_HDR_ON
+    call fill_rect
+    mov ecx, 56
+    mov edx, 48
+    lea r8, [clrBar + 56]
+    mov r9d, 5
+    mov r10d, COL_WHITE
+    call draw_text
+
+    mov ecx, 62 * CHAR_W
+    mov edx, 48 * CHAR_H
+    mov r8d, 5 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_BEAT
+    cmp dword [clipChValid], 0
+    je .spv_bg
+    mov r10d, COL_HDR_ON
+.spv_bg:
+    call fill_rect
+    mov ecx, 62
+    mov edx, 48
+    lea r8, [clrBar + 62]
+    mov r9d, 5
+    mov r10d, COL_MUTED
+    cmp dword [clipChValid], 0
+    je .spv_tx
+    mov r10d, COL_WHITE
+.spv_tx:
+    call draw_text
+
+    mov ecx, 68 * CHAR_W
+    mov edx, 48 * CHAR_H
+    mov r8d, 5 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_HDR_ON
+    call fill_rect
+    mov ecx, 68
+    mov edx, 48
+    lea r8, [clrBar + 68]
+    mov r9d, 5
+    mov r10d, COL_WHITE
+    call draw_text
+
+    mov ecx, 74 * CHAR_W
+    mov edx, 48 * CHAR_H
+    mov r8d, 5 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_BEAT
+    cmp dword [clipPatValid], 0
+    je .ptv_bg
+    mov r10d, COL_HDR_ON
+.ptv_bg:
+    call fill_rect
+    mov ecx, 74
+    mov edx, 48
+    lea r8, [clrBar + 74]
+    mov r9d, 5
+    mov r10d, COL_MUTED
+    cmp dword [clipPatValid], 0
+    je .ptv_tx
+    mov r10d, COL_WHITE
+.ptv_tx:
+    call draw_text
+
+    ; Fusszeile (Zeile 49)
     mov eax, [curTempo]
     lea rdx, [hexTbl]
     mov al, [rdx + rax]

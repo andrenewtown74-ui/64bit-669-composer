@@ -1,4 +1,4 @@
-; Datei-I/O: 64-Sample / 128-Pattern / 64-Zeilen .669-I/O, WAV-Importer und Slot-Verwaltung
+; Datei-I/O: 64-Sample / 128-Pattern / 64-Zeilen .669-I/O, WAV-Importer, Slot- und Loeschverwaltung
 
 ; OPENFILENAMEA-Struktur fuer x64 initialisieren: RCX=pfadBuf, RDX=filter, R8=defExt
 init_ofn:
@@ -74,7 +74,7 @@ copy_basename:
     pop rsi
     ret
 
-; Alle 64 Sample-Slots beim Start auf Standardwerte initialisieren
+; Alle 64 Sample-Slots beim Start oder Reset auf Standardwerte initialisieren
 init_samp_meta:
     push rbx
     push rsi
@@ -142,6 +142,189 @@ init_samp_meta:
     pop rdi
     pop rsi
     pop rbx
+    ret
+
+; ============================================================================
+; Sicherheitsabfrage und Loeschfunktionen (Pattern, Alle Patterns, Samples, Alles)
+; ============================================================================
+
+; Ja/Nein-Dialog ueber MessageBoxA: RCX = TextPtr, RDX = TitelPtr -> EAX = 1 (Ja) / 0 (Nein)
+confirm_dialog:
+    sub rsp, 0x28
+    mov r8, rdx
+    mov rdx, rcx
+    mov rcx, [hWnd]
+    mov r9d, MB_CONFIRM
+    call MessageBoxA
+    cmp eax, IDYES
+    sete al
+    movzx eax, al
+    add rsp, 0x28
+    ret
+
+; Interner Helfer: Alle 128 Patterns, Tempos, Breaks und Orders zuruecksetzen
+reset_patterns_raw:
+    push rdi
+    lea rdi, [patterns]
+    mov al, 0xFF
+    mov ecx, MAX_PATS * PAT_BYTES
+    rep stosb
+
+    lea rdi, [patTempos]
+    mov al, 5
+    mov ecx, MAX_PATS
+    rep stosb
+
+    lea rdi, [patBreaks]
+    mov al, PAT_ROWS - 1
+    mov ecx, MAX_PATS
+    rep stosb
+
+    lea rdi, [orderList]
+    xor eax, eax
+    mov ecx, MAX_ORDERS
+    rep stosb
+
+    mov dword [orderLen], 1
+    mov dword [loopOrder], 0
+    mov dword [curTempo], 5
+    mov dword [songMode], 0
+    mov dword [curPat], 0
+    mov dword [playPat], 0
+    mov dword [dispPlayPat], 0
+    mov dword [playOrder], 0
+    mov dword [dispPlayOrder], 0
+    mov dword [editRow], 0
+    mov dword [playRow], 0
+    mov dword [dispPlayRow], 0
+    mov dword [patViewTop], 0
+    mov dword [ordViewTop], 0
+    mov dword [curCh], 0
+    mov dword [curSubCol], 0
+    mov dword [needPatTempo], 0
+    pop rdi
+    ret
+
+; Aktuelles Pattern (alle 64 Zeilen) nach Bestaetigung leeren
+clear_cur_pattern:
+    push rdi
+    sub rsp, 0x20
+
+    lea rcx, [msgClrPat]
+    lea rdx, [capClrPat]
+    call confirm_dialog
+    test eax, eax
+    jz .ccp_done
+
+    call silence_audio
+
+    mov eax, [curPat]
+    and eax, MAX_PATS - 1
+    lea rdx, [patBreaks]
+    mov byte [rdx + rax], PAT_ROWS - 1
+
+    shl eax, 11
+    lea rdi, [patterns]
+    add rdi, rax
+    mov al, 0xFF
+    mov ecx, PAT_BYTES
+    rep stosb
+
+    mov dword [editRow], 0
+    mov dword [patViewTop], 0
+    lea rcx, [stClrPat]
+    call set_status
+    mov dword [dirty], 1
+
+.ccp_done:
+    add rsp, 0x20
+    pop rdi
+    ret
+
+; Alle 128 Patterns und Order-Liste nach Bestaetigung leeren (Samples bleiben)
+clear_all_patterns:
+    sub rsp, 0x28
+
+    lea rcx, [msgClrAllPats]
+    lea rdx, [capClrAllPats]
+    call confirm_dialog
+    test eax, eax
+    jz .cap_done
+
+    call silence_audio
+    call reset_patterns_raw
+    lea rcx, [stClrPats]
+    call set_status
+    mov dword [dirty], 1
+
+.cap_done:
+    add rsp, 0x28
+    ret
+
+; Alle 64 Sample-Slots nach Bestaetigung leeren (00..07 zurueck auf Synth)
+clear_all_instruments:
+    sub rsp, 0x28
+
+    lea rcx, [msgClrInsts]
+    lea rdx, [capClrInsts]
+    call confirm_dialog
+    test eax, eax
+    jz .cai_done
+
+    call silence_audio
+    call init_samp_meta
+    mov dword [curInst], 0
+    mov dword [sampViewTop], 0
+    lea rcx, [stClrInst]
+    call set_status
+    mov dword [dirty], 1
+
+.cai_done:
+    add rsp, 0x28
+    ret
+
+; Kompletter Reset (Patterns, Orders, Titel, Mutes und alle 64 Samples) nach Bestaetigung
+clear_all_song:
+    push rsi
+    push rdi
+    sub rsp, 0x28
+
+    lea rcx, [msgClrAll]
+    lea rdx, [capClrAll]
+    call confirm_dialog
+    test eax, eax
+    jz .cas_done
+
+    call silence_audio
+    call reset_patterns_raw
+    call init_samp_meta
+    mov dword [curInst], 0
+    mov dword [sampViewTop], 0
+
+    lea rdi, [chMuted]
+    xor eax, eax
+    mov ecx, NUM_CH
+    rep stosb
+
+    lea rdi, [titleBox]
+    mov al, ' '
+    mov ecx, 108
+    rep stosb
+
+    mov byte [filePath], 0
+    lea rsi, [txtNewFile]
+    lea rdi, [topBar + 39]
+    mov ecx, 16
+    rep movsb
+
+    lea rcx, [stNewSong]
+    call set_status
+    mov dword [dirty], 1
+
+.cas_done:
+    add rsp, 0x28
+    pop rdi
+    pop rsi
     ret
 
 ; ============================================================================
@@ -819,14 +1002,13 @@ build_669_buffer:
     rep stosb
 
     lea r12, [fileBuf]
-    mov word [r12 + 0], 0x6669          ; Signatur 'if'
+    mov word [r12 + 0], 0x6669
 
     lea rsi, [titleBox]
     lea rdi, [r12 + 2]
     mov ecx, 108
     rep movsb
 
-    ; Hoechsten belegten Sample-Slot bestimmen (mindestens 8, maximal 64)
     mov ecx, MAX_SAMPS - 1
     lea rdx, [sampHasPcm]
 .find_nos:
@@ -841,9 +1023,8 @@ build_669_buffer:
 .nos_found:
     inc ecx
     mov [saveNos], ecx
-    mov [r12 + 110], cl                 ; NOS
+    mov [r12 + 110], cl
 
-    ; Hoechstes genutztes Pattern ermitteln (curPat, orderList, belegte Zellen)
     mov r13d, [curPat]
     xor ecx, ecx
     lea rdx, [orderList]
@@ -886,12 +1067,11 @@ build_669_buffer:
     mov r13d, MAX_PATS
 .fnop_ok:
     mov [saveNop], r13d
-    mov [r12 + 111], r13b               ; NOP
+    mov [r12 + 111], r13b
 
     mov al, [loopOrder]
-    mov [r12 + 112], al                 ; Loop-Order
+    mov [r12 + 112], al
 
-    ; Order-Liste (128 Byte, ungenutzte Eintraege = 0xFF)
     lea rdi, [r12 + 113]
     mov al, 0xFF
     mov ecx, MAX_ORDERS
@@ -906,7 +1086,6 @@ build_669_buffer:
 .ol_ok:
     rep movsb
 
-    ; Pattern-Tempos (128 Byte) und Pattern-Breaks (128 Byte) uebertragen
     lea rsi, [patTempos]
     lea rdi, [r12 + 241]
     mov ecx, MAX_PATS
@@ -917,7 +1096,6 @@ build_669_buffer:
     mov ecx, MAX_PATS
     rep movsb
 
-    ; Sample-Header (saveNos * 25 Byte) ab Offset 497
     lea rdi, [r12 + 497]
     xor ebx, ebx
 .sh_loop:
@@ -969,7 +1147,6 @@ build_669_buffer:
     jmp .sh_loop
 .sh_done:
 
-    ; Alle verwendeten Patterns (je 64 Zeilen * 8 Kanaele * 3 Byte = 1536 Byte) schreiben
     lea rsi, [patterns]
     xor ebx, ebx
 .sp_pat:
@@ -1034,7 +1211,6 @@ build_669_buffer:
     jmp .sp_pat
 .sp_done:
 
-    ; Sample-Daten (0..saveNos-1) anhaengen
     xor ebx, ebx
 .sm_out_loop:
     cmp ebx, [saveNos]
@@ -1121,14 +1297,13 @@ parse_669_buffer:
     dec ecx
     jnz .msg_cp
 
-    movzx r13d, byte [rbp + 110]        ; NOS (0..64)
+    movzx r13d, byte [rbp + 110]
     mov [origNos], r13d
-    movzx r14d, byte [rbp + 111]        ; NOP (1..128)
+    movzx r14d, byte [rbp + 111]
     test r14d, r14d
     jz .fail
     mov [origNop], r14d
 
-    ; Vollstaendige Order-Liste (bis zu 128 Eintraege) einlesen
     lea rdi, [orderList]
     xor eax, eax
     mov ecx, MAX_ORDERS
@@ -1157,7 +1332,6 @@ parse_669_buffer:
 .ol_has:
     mov [orderLen], ebx
 
-    ; Loop-Order aus Header-Byte 112 uebernehmen und pruefen
     movzx eax, byte [rbp + 112]
     cmp eax, [orderLen]
     jb .lo_ok
@@ -1165,7 +1339,6 @@ parse_669_buffer:
 .lo_ok:
     mov [loopOrder], eax
 
-    ; Pattern-Tempos (Offset 241) und Pattern-Breaks (Offset 369) fuer alle 128 Patterns laden
     xor ebx, ebx
 .tb_rd:
     movzx eax, byte [rbp + 241 + rbx]
@@ -1196,7 +1369,6 @@ parse_669_buffer:
     movzx eax, byte [rdx + rax]
     mov [curTempo], eax
 
-    ; Alle 64 Sample-Metadaten leeren
     lea rdi, [sampHasPcm]
     xor eax, eax
     mov ecx, MAX_SAMPS
@@ -1219,7 +1391,6 @@ parse_669_buffer:
     cmp ebx, MAX_SAMPS
     jb .sm_clr
 
-    ; Bis zu 64 Sample-Header einlesen
     mov r15d, 497
     xor ebx, ebx
 .sh_rd:
@@ -1271,7 +1442,6 @@ parse_669_buffer:
     jmp .sh_rd
 .sh_done:
 
-    ; Alle 128 Patterns (je 64 Zeilen) leeren und bis zu 128 Patterns vollstaendig dekodieren
     lea rdi, [patterns]
     mov al, 0xFF
     mov ecx, MAX_PATS * PAT_BYTES
@@ -1291,11 +1461,11 @@ parse_669_buffer:
     ja .pat_done
 
     mov eax, ebx
-    shl eax, 11                         ; pat * 2048
+    shl eax, 11
     lea rdi, [patterns]
     add rdi, rax
 
-    mov ecx, PAT_ROWS * NUM_CH          ; Alle 64 Zeilen * 8 Kanaele = 512 Zellen (1536 Byte)
+    mov ecx, PAT_ROWS * NUM_CH
 .cell_rd:
     movzx eax, byte [rbp + r15 + 0]
     movzx edx, byte [rbp + r15 + 1]
@@ -1360,7 +1530,6 @@ parse_669_buffer:
     add r15d, eax
 
 .pcm_rd_start:
-    ; Alle vorhandenen 8-Bit-PCM-Samples (bis zu 64 Slots) laden
     xor ebx, ebx
 .pcm_rd_loop:
     cmp ebx, [origNos]
@@ -1404,7 +1573,7 @@ parse_669_buffer:
     lea rax, [sampLenTbl]
     mov [rax + rbx*4], edx
     lea rax, [sampC2Step]
-    mov dword [rax + rbx*4], 3107       ; 8363 Hz auf Oktave 2 (Note 24)
+    mov dword [rax + rbx*4], 3107
 
     lea rax, [sampLoopEndTbl]
     mov r8d, [rax + rbx*4]
@@ -1438,7 +1607,6 @@ parse_669_buffer:
     mov dword [sampViewTop], 0
     mov dword [needPatTempo], 0
 
-    ; Bei Songs mit mehreren Orders direkt in den SONG-ORD-Modus wechseln
     mov dword [songMode], 0
     cmp dword [orderLen], 1
     jbe .sm_done

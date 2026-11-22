@@ -12,7 +12,7 @@ DEMO_H          equ 200
 MAX_PATS        equ 128
 PAT_ROWS        equ 64
 VIEW_ROWS       equ 32
-HELP_LINES      equ 30
+HELP_LINES      equ 34
 MAX_ORDERS      equ 128
 NUM_CH          equ 8
 MAX_SAMPS       equ 64
@@ -42,6 +42,8 @@ ETO_OPAQUE      equ 2
 TRANSPARENT     equ 1
 WHDR_DONE       equ 0x00000001
 IDC_ARROW       equ 32512
+MB_CONFIRM      equ 0x00000134          ; MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2
+IDYES           equ 6
 
 GENERIC_READ          equ 0x80000000
 GENERIC_WRITE         equ 0x40000000
@@ -64,6 +66,7 @@ WM_MOUSEWHEEL   equ 0x020A
 VK_BACK         equ 0x08
 VK_TAB          equ 0x09
 VK_RETURN       equ 0x0D
+VK_SHIFT        equ 0x10
 VK_CONTROL      equ 0x11
 VK_ESCAPE       equ 0x1B
 VK_SPACE        equ 0x20
@@ -135,6 +138,7 @@ extern GetWindowRect
 extern SetWindowLongA
 extern SetWindowPos
 extern ScreenToClient
+extern MessageBoxA
 
 ; gdi32.dll
 extern CreateCompatibleDC
@@ -175,6 +179,7 @@ noteNames    db "C C#D D#E F F#G G#A A#B "
 txtOn        db "On "
 txtOff       db "Off"
 txtEmptySlot db " (leer)   "
+txtNewFile   db "_NEUER_SONG     "
 
 flt669       db "Composer 669 (*.669)", 0, "*.669", 0, "Alle Dateien (*.*)", 0, "*.*", 0, 0
 defExt       db "669", 0
@@ -186,6 +191,16 @@ fltWav       db "WAV-Audio (*.wav)", 0, "*.wav", 0, "Alle Dateien (*.*)", 0, "*.
 defWavExt    db "wav", 0
 dlgWavTitle  db "WAV-Sample auf aktiven Slot (00..3F) laden", 0
 
+; Dialogtexte fuer Sicherheitsabfragen beim Loeschen
+capClrPat     db "Pattern loeschen", 0
+msgClrPat     db "Aktuelles Pattern (alle 64 Zeilen) wirklich loeschen?", 0
+capClrAllPats db "Alle Patterns loeschen", 0
+msgClrAllPats db "Alle 128 Patterns und die Order-Liste wirklich leeren? (Samples bleiben erhalten)", 0
+capClrInsts   db "Alle Instrumente loeschen", 0
+msgClrInsts   db "Alle 64 Sample-Slots leeren? (Slots 00..07 werden auf Synth zurueckgesetzt)", 0
+capClrAll     db "Neuer Song / Alles loeschen", 0
+msgClrAll     db "Wirklich ALLES leeren (alle Patterns, Orders, Titel und alle 64 Samples)?", 0
+
 stSaved      db "SAVED  "
 stLoaded     db "LOADED "
 stError      db "ERROR! "
@@ -196,8 +211,18 @@ stLoopOn     db "LOOPON "
 stLoopOff    db "LOOPOFF"
 stSynth      db "SYNTH  "
 stBreak      db "BREAK  "
+stClrPat     db "PAT CLR"
+stClrPats    db "PATSCLR"
+stClrInst    db "INSTCLR"
+stNewSong    db "NEWSONG"
+stCpCh       db "CH COPY"
+stPsCh       db "CH PAST"
+stCpPat      db "PAT CPY"
+stPsPat      db "PAT PST"
+stNoClip     db "NO CLIP"
 
 topBar      db " Composer 669 x64 Tracker        File: _4KSYNTH          Mode: PAT-LOOP        "
+clrBar      db " Loeschen: [Akt.Pat] [Alle Pat] [Alle Inst] [Alles/Neu] [SpC] [SpV] [PtC] [PtV] "
 botBar      db " Tmp:5 Oct:2 Ch:0 Pat:00 Row:00/3F Ins:00 Stp:1 [SPACE=Play Ctrl+B=Brk] [D] [?]"
 demoTopBar  db "4K:PLASMA File:                  Ord:00 Pat:00 Row:00 Tmp:5  [TAB=FX ESC=Back] "
 demoBotBar  db " [TAB/Rad=Effekt] [Klick/ESC=Tracker] [R-Klick/SPACE=Play] [Strg+O=669] [FS]   "
@@ -338,21 +363,25 @@ helpLines:
     HLINE "  Y..M / Q..I     : QWERTZ-Piano (2 Oktaven, Live-Vorhoeren)"
     HLINE "  0-9 / A-F       : Instrument (00..3F), Volume, Effekt setzen"
     HLINE "  Entf / Backsp.  : Feld oder Zeile loeschen"
+    HLINE "  Strg+C / +V     : Aktuelle Spur (64 Zeilen) kopieren/einf."
+    HLINE "  Strg+Shift+C/V  : Ganzes Pattern (8 Spuren) kopieren/einf."
     HLINE "  F1 / F2         : Oktave runter / hoch"
     HLINE "  F3 / F4         : Sample-Slot / Instrument waehlen (00..3F)"
     HLINE "  F7 / F8         : Tempo runter / hoch (1..F)"
     HLINE "  F9 / F10        : Edit-Step (1,2,4,0) / Kanal Mute (On/Off)"
     HLINE "  Effekte (a..f)  : a:Up b:Down c:Porta d:Detune e:Vib f:Tempo"
     HLINE " "
-    HLINE " DATEIEN, SAMPLES, DEMO & MAUS"
+    HLINE " DATEIEN, SAMPLES, LOESCHEN & DEMO"
     HLINE "  Strg+O / F11    : .669-Modul laden"
     HLINE "  Strg+S / F12    : .669-Modul speichern"
     HLINE "  Strg+W / Einfg  : WAV-Sample auf aktiven Slot laden"
     HLINE "  Strg+L / Strg+U : Sample-Loop umschalten / Slot auf Synth"
     HLINE "  Strg+B          : Pattern-Break auf Cursorzeile setzen"
+    HLINE "  Strg+Entf / +N  : Akt. Pattern leeren / Alles leer (Neu)"
+    HLINE "  Strg+Shift+P / I: Alle Patterns / Alle 64 Samples leeren"
     HLINE "  Strg+D / [D]    : 4K-Demo (TAB: Plasma / 3D-Tunnel / Raster)"
     HLINE "  Alt+Ent / Strg+F: Vollbild (Fullscreen) umschalten"
-    HLINE "  Maus / Rad      : Klick=Wahl/Vorschau, Fusszeile L=+/R=-"
+    HLINE "  Maus / Rad      : Klick=Wahl/Loeschen/C-V, Fusszeile L=+/R=-"
     HLINE "----------------------------------------------------------------"
     HLINE "        Klick, ESC oder Strg+H schliesst diese Hilfe"
 
@@ -394,6 +423,12 @@ origNos       resd 1
 origNop       resd 1
 saveNos       resd 1
 saveNop       resd 1
+
+; Zwischenablage-Status fuer Spur und Pattern
+clipChValid   resd 1
+clipPatValid  resd 1
+clipPatBreak  resd 1
+clipPatTempo  resd 1
 
 ; Fullscreen- und Skalierungszustand
 isFullscreen  resd 1
@@ -466,6 +501,8 @@ patTempos      resb MAX_PATS
 patBreaks      resb MAX_PATS
 voices         resb NUM_CH * VOICE_SIZE
 voiceTargetInc resd NUM_CH
+clipChBuf      resb PAT_ROWS * CELL_SIZE
+clipPatBuf     resb PAT_BYTES
 patterns       resb MAX_PATS * PAT_BYTES
 lineBuf        resb 32
 cellBuf        resb 16
