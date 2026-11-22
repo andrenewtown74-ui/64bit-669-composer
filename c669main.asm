@@ -161,11 +161,18 @@ toggle_fullscreen:
 ; ============================================================================
 ; Fensterprozedur (x64 ABI konform, inkl. Maus und Alt+Enter Fullscreen)
 ; ============================================================================
+; ============================================================================
+; Fensterprozedur (x64 ABI konform, inkl. Maus-Drag und Alt+Enter Fullscreen)
+; ============================================================================
 WndProc:
     cmp edx, WM_KEYDOWN
     je .on_key
+    cmp edx, WM_MOUSEMOVE
+    je .on_mousemove
     cmp edx, WM_LBUTTONDOWN
     je .on_lbtn
+    cmp edx, WM_LBUTTONUP
+    je .on_lbtnup
     cmp edx, WM_RBUTTONDOWN
     je .on_rbtn
     cmp edx, WM_MOUSEWHEEL
@@ -224,12 +231,33 @@ WndProc:
     xor eax, eax
     ret
 
+.on_mousemove:
+    cmp dword [sampEdMode], 0
+    je .eat_msg
+    cmp dword [seDragMode], 0
+    je .eat_msg
+    sub rsp, 0x28
+    mov ecx, r9d
+    call samped_mouse_move
+    add rsp, 0x28
+    xor eax, eax
+    ret
+
 .on_lbtn:
     sub rsp, 0x28
     mov ecx, r9d
     xor edx, edx
     call handle_mouse_down
     mov dword [dirty], 1
+    add rsp, 0x28
+    xor eax, eax
+    ret
+
+.on_lbtnup:
+    cmp dword [seDragMode], 0
+    je .eat_msg
+    sub rsp, 0x28
+    call samped_mouse_up
     add rsp, 0x28
     xor eax, eax
     ret
@@ -253,7 +281,6 @@ WndProc:
     add rsp, 0x28
     xor eax, eax
     ret
-
 ; ============================================================================
 ; Programmeinstieg
 ; ============================================================================

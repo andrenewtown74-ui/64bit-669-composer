@@ -1,4 +1,4 @@
-; Sample- und Instrument-Editor (Wellenform, waveIn-Aufnahme, Effekte, ADSR-Synth-Designer)
+; Sample- und Instrument-Editor (Wellenform, verschiebbare Loop-Striche, waveIn-Aufnahme mit Live-VU & Geraeteauswahl, Effekte, Live-ADSR-Synth)
 
 ; Wert EAX (0..999) als 3 rechtsbuendige Dezimalzeichen nach [R8] schreiben
 fmt_dec3:
@@ -28,10 +28,16 @@ fmt_dec3:
     mov [r8 + 2], dl
     ret
 
-; Standardwerte fuer ADSR-Synthesizer beim Programmstart setzen
+; Standardwerte fuer ADSR-Synthesizer und Aufnahmegerat beim Programmstart setzen
 init_samped_defaults:
+    sub rsp, 0x28
     mov dword [seLastSlot], -1
     mov dword [seLastLen], -1
+    mov dword [seRecDevId], -1          ; Standard-Aufnahmegeraet (WAVE_MAPPER)
+    mov dword [seLiveSynth], 1          ; Live-Aenderung standardmaessig aktiv
+    mov dword [seAutoLoop], 0
+    mov dword [seDragMode], 0
+    mov dword [seDragParam], 0
     mov dword [seWave], 1               ; Saegezahn
     mov dword [sePulse], 50             ; 50% Pulsbreite
     mov dword [seParams + 0*4], 4       ; Attack
@@ -42,6 +48,163 @@ init_samped_defaults:
     mov dword [seParams + 5*4], 50      ; Sweep (50 = neutral)
     mov dword [seParams + 6*4], 18      ; Detune / Chorus
     mov dword [seParams + 7*4], 80      ; Tiefpass-Filter
+    mov dword [seParams + 8*4], 90      ; Lautstaerke (90%)
+    call samped_refresh_rec_dev
+    add rsp, 0x28
+    ret
+
+; Aufnahmegeraete zaehlen und Anzeigenamen (28 Zeichen) in seRecDevName aktualisieren
+samped_refresh_rec_dev:
+    push rbx
+    push rsi
+    push rdi
+    sub rsp, 0x20
+
+    call waveInGetNumDevs
+    mov [seRecDevCount], eax
+    mov ebx, eax
+
+    test ebx, ebx
+    jnz .srd_has_dev
+    mov dword [seRecDevId], -1
+    lea rsi, [txtDevNone]
+    lea rdi, [seRecDevName]
+    mov ecx, 28
+    rep movsb
+    jmp .srd_done
+
+.srd_has_dev:
+    mov eax, [seRecDevId]
+    cmp eax, -1
+    je .srd_std
+    cmp eax, ebx
+    jl .srd_query
+    mov dword [seRecDevId], -1
+
+.srd_std:
+    lea rsi, [txtDevStd]
+    lea rdi, [seRecDevName]
+    mov ecx, 28
+    rep movsb
+    jmp .srd_done
+
+.srd_query:
+    lea rdi, [recDevCaps]
+    xor eax, eax
+    mov ecx, 48
+    rep stosb
+
+    mov ecx, [seRecDevId]
+    lea rdx, [recDevCaps]
+    mov r8d, 48
+    call waveInGetDevCapsA
+    test eax, eax
+    jnz .srd_std
+
+    ; szPname liegt bei WAVEINCAPSA + 8 (max. 32 Bytes, nullterminiert)
+    lea rsi, [recDevCaps + 8]
+    lea rdi, [seRecDevName]
+    xor ecx, ecx
+.srd_cp:
+    cmp ecx, 28
+    jae .srd_done
+    mov al, [rsi + rcx]
+    test al, al
+    jz .srd_pad
+    cmp al, 32
+    jae .srd_st
+    mov al, ' '
+.srd_st:
+    mov [rdi + rcx], al
+    inc ecx
+    jmp .srd_cp
+.srd_pad:
+    mov byte [rdi + rcx], ' '
+    inc ecx
+    cmp ecx, 28
+    jb .srd_pad
+
+.srd_done:
+    add rsp, 0x20
+    pop rdi
+    pop rsi
+    pop rbx
+    ret
+
+; Aufnahmegeraet weiterschalten: ECX = +1 (naechstes) oder -1 (vorheriges)
+samped_cycle_rec_dev:
+    push rbx
+    push r12
+    sub rsp, 0x28
+
+    cmp dword [isRecording], 0
+    jne .scd_done
+
+    mov r12d, ecx
+    call waveInGetNumDevs
+    mov [seRecDevCount], eax
+    mov ebx, eax
+    test ebx, ebx
+    jz .scd_none
+
+    mov eax, [seRecDevId]
+    test r12d, r12d
+    js .scd_prev
+    inc eax
+    cmp eax, ebx
+    jl .scd_st
+    mov eax, -1
+    jmp .scd_st
+
+.scd_prev:
+    dec eax
+    cmp eax, -1
+    jge .scd_st
+    lea eax, [rbx - 1]
+    jmp .scd_st
+
+.scd_none:
+    mov eax, -1
+
+.scd_st:
+    mov [seRecDevId], eax
+    call samped_refresh_rec_dev
+    mov dword [dirty], 1
+
+.scd_done:
+    add rsp, 0x28
+    pop r12
+    pop rbx
+    ret
+
+; Client-lParam (ECX) in geklemmte virtuelle X-Koordinate (EAX = 0..959) umrechnen
+se_lparam_to_px:
+    movsx eax, cx
+    cmp dword [isFullscreen], 0
+    je .slp_clamp
+    sub eax, [dispX]
+    jns .slp_fs_pos
+    xor eax, eax
+    ret
+.slp_fs_pos:
+    cmp eax, [dispW]
+    jb .slp_fs_div
+    mov eax, WIN_W - 1
+    ret
+.slp_fs_div:
+    imul eax, WIN_W
+    xor edx, edx
+    div dword [dispW]
+.slp_clamp:
+    test eax, eax
+    jns .slp_hi
+    xor eax, eax
+    ret
+.slp_hi:
+    cmp eax, WIN_W - 1
+    jbe .slp_ok
+    mov eax, WIN_W - 1
+.slp_ok:
     ret
 
 ; Auswahlmarker bei Slot- oder Laengenaenderung automatisch auf 0..len setzen
@@ -95,10 +258,97 @@ samped_preview:
     ret
 
 ; ============================================================================
-; Audio-Aufnahme ueber WinMM waveIn (22050 Hz, 8-Bit Mono, max. 128 KB)
+; Audio-Aufnahme ueber WinMM waveIn (4x 512 Bytes Streaming, Live-VU & Geraetewahl)
 ; ============================================================================
+
+; Fertigen Aufnahme-Chunk (RCX = WAVEHDR-Ptr) auswerten: Live-VU berechnen & an recBuf anhaengen
+rec_consume_chunk:
+    push rbx
+    push rsi
+    push rdi
+
+    mov ebx, [rcx + 12]                 ; dwBytesRecorded
+    test ebx, ebx
+    jz .rc_done
+
+    mov rsi, [rcx + 0]                  ; lpData
+    xor r8d, r8d                        ; chunkPeak (0..127)
+    xor r9d, r9d
+.rc_pk:
+    movzx eax, byte [rsi + r9]
+    sub eax, 128
+    jns .rc_pos
+    neg eax
+.rc_pos:
+    cmp eax, r8d
+    jbe .rc_pn
+    mov r8d, eax
+.rc_pn:
+    inc r9d
+    cmp r9d, ebx
+    jb .rc_pk
+
+    ; Geglaettetes VU (schneller Anstieg, weicher Abfall)
+    mov eax, [recVuLevel]
+    imul eax, 3
+    shr eax, 2
+    cmp r8d, eax
+    jbe .rc_vu_st
+    mov eax, r8d
+.rc_vu_st:
+    mov [recVuLevel], eax
+
+    ; Peak-Hold aktualisieren (~0,5 s Haltezeit)
+    cmp r8d, [recVuPeakHold]
+    jb .rc_ph_dec
+    mov [recVuPeakHold], r8d
+    mov dword [recVuHoldCnt], 20
+    jmp .rc_copy
+.rc_ph_dec:
+    cmp dword [recVuHoldCnt], 0
+    je .rc_ph_drop
+    dec dword [recVuHoldCnt]
+    jmp .rc_copy
+.rc_ph_drop:
+    cmp dword [recVuPeakHold], 3
+    jbe .rc_ph_zero
+    sub dword [recVuPeakHold], 3
+    jmp .rc_copy
+.rc_ph_zero:
+    mov dword [recVuPeakHold], 0
+
+.rc_copy:
+    mov eax, MAX_SAMP_BYTES
+    sub eax, [recWritePos]
+    jbe .rc_clr
+    mov edx, ebx
+    cmp edx, eax
+    jbe .rc_cp_ok
+    mov edx, eax
+.rc_cp_ok:
+    mov eax, [recWritePos]
+    lea rdi, [recBuf]
+    add rdi, rax
+    push rcx
+    mov ecx, edx
+    rep movsb
+    pop rcx
+    add [recWritePos], edx
+
+.rc_clr:
+    mov dword [rcx + 12], 0
+
+.rc_done:
+    pop rdi
+    pop rsi
+    pop rbx
+    ret
+
+; Aufnahme starten (oder laufende Aufnahme stoppen)
 start_recording:
     push rbx
+    push rsi
+    push rdi
     sub rsp, 0x40
 
     cmp dword [isRecording], 0
@@ -109,8 +359,13 @@ start_recording:
 .sr_open:
     call silence_audio
 
+    mov dword [recWritePos], 0
+    mov dword [recVuLevel], 0
+    mov dword [recVuPeakHold], 0
+    mov dword [recVuHoldCnt], 0
+
     lea rcx, [hWaveIn]
-    mov edx, -1                         ; WAVE_MAPPER
+    mov edx, [seRecDevId]               ; -1 = WAVE_MAPPER oder ausgewaehlte Geraete-ID
     lea r8, [wfxRec]
     xor r9d, r9d
     mov qword [rsp + 0x20], 0
@@ -119,29 +374,41 @@ start_recording:
     test eax, eax
     jnz .sr_err
 
-    ; WAVEHDR leeren und Puffer eintragen
-    lea rdi, [recHdr]
+    lea rdi, [recHdrs]
     xor eax, eax
-    mov ecx, 48
+    mov ecx, REC_BUF_COUNT * 48
     rep stosb
 
-    lea rax, [recBuf]
-    mov [recHdr + 0], rax
-    mov dword [recHdr + 8], MAX_SAMP_BYTES
+    xor ebx, ebx
+.sr_buf_loop:
+    imul eax, ebx, 48
+    lea rsi, [recHdrs]
+    add rsi, rax
+
+    imul eax, ebx, REC_CHUNK_BYTES
+    lea rdi, [recChunks]
+    add rdi, rax
+
+    mov [rsi + 0], rdi
+    mov dword [rsi + 8], REC_CHUNK_BYTES
 
     mov rcx, [hWaveIn]
-    lea rdx, [recHdr]
+    mov rdx, rsi
     mov r8d, 48
     call waveInPrepareHeader
     test eax, eax
     jnz .sr_close_err
 
     mov rcx, [hWaveIn]
-    lea rdx, [recHdr]
+    mov rdx, rsi
     mov r8d, 48
     call waveInAddBuffer
     test eax, eax
     jnz .sr_close_err
+
+    inc ebx
+    cmp ebx, REC_BUF_COUNT
+    jb .sr_buf_loop
 
     mov rcx, [hWaveIn]
     call waveInStart
@@ -158,6 +425,20 @@ start_recording:
 
 .sr_close_err:
     mov rcx, [hWaveIn]
+    call waveInReset
+    xor ebx, ebx
+.sr_unp_err:
+    imul eax, ebx, 48
+    lea rdx, [recHdrs]
+    add rdx, rax
+    mov rcx, [hWaveIn]
+    mov r8d, 48
+    call waveInUnprepareHeader
+    inc ebx
+    cmp ebx, REC_BUF_COUNT
+    jb .sr_unp_err
+
+    mov rcx, [hWaveIn]
     call waveInClose
     mov qword [hWaveIn], 0
 .sr_err:
@@ -167,6 +448,8 @@ start_recording:
 
 .sr_done:
     add rsp, 0x40
+    pop rdi
+    pop rsi
     pop rbx
     ret
 
@@ -180,6 +463,9 @@ stop_recording:
     cmp dword [isRecording], 0
     je .st_done
     mov dword [isRecording], 0
+    mov dword [recVuLevel], 0
+    mov dword [recVuPeakHold], 0
+    mov dword [recVuHoldCnt], 0
 
     mov rcx, [hWaveIn]
     test rcx, rcx
@@ -188,15 +474,30 @@ stop_recording:
     call waveInStop
     mov rcx, [hWaveIn]
     call waveInReset
+
+    ; Restliche Teilpuffer einsammeln und alle Header freigeben
+    xor ebx, ebx
+.st_unp_loop:
+    imul eax, ebx, 48
+    lea rsi, [recHdrs]
+    add rsi, rax
+    mov rcx, rsi
+    call rec_consume_chunk
+
     mov rcx, [hWaveIn]
-    lea rdx, [recHdr]
+    mov rdx, rsi
     mov r8d, 48
     call waveInUnprepareHeader
+
+    inc ebx
+    cmp ebx, REC_BUF_COUNT
+    jb .st_unp_loop
+
     mov rcx, [hWaveIn]
     call waveInClose
     mov qword [hWaveIn], 0
 
-    mov ebx, [recHdr + 12]              ; dwBytesRecorded
+    mov ebx, [recWritePos]
     test ebx, ebx
     jz .st_empty
     cmp ebx, MAX_SAMP_BYTES
@@ -223,9 +524,8 @@ stop_recording:
     lea rdx, [sampLoopEndTbl]
     mov dword [rdx + r10*4], 0xFFFFF
     lea rdx, [sampC2Step]
-    mov dword [rdx + r10*4], 16384      ; (22050 << 15) / 44100 fuer C-3 Originalhoehe
+    mov dword [rdx + r10*4], 16384
 
-    ; Slot-Namen "REC XX 22kHz" setzen
     mov eax, r10d
     imul eax, 12
     lea rdi, [sampNames]
@@ -261,19 +561,48 @@ stop_recording:
     pop rbx
     ret
 
-; In der Hauptschleife pruefen, ob der 128-KB-Aufnahmepuffer voll ist
+; In der Hauptschleife fertige 512-Byte-Chunks einsammeln, Live-VU aktualisieren und neu einreihen
 poll_recording:
+    push rbx
+    push rsi
     sub rsp, 0x28
+
     cmp dword [isRecording], 0
     je .pr_done
-    test dword [recHdr + 24], WHDR_DONE
-    jz .pr_redraw
+
+    xor ebx, ebx
+.pr_loop:
+    imul eax, ebx, 48
+    lea rsi, [recHdrs]
+    add rsi, rax
+    test dword [rsi + 24], WHDR_DONE
+    jz .pr_next
+
+    mov rcx, rsi
+    call rec_consume_chunk
+    mov dword [dirty], 1
+
+    cmp dword [recWritePos], MAX_SAMP_BYTES
+    jb .pr_requeue
     call stop_recording
     jmp .pr_done
-.pr_redraw:
-    mov dword [dirty], 1
+
+.pr_requeue:
+    and dword [rsi + 24], ~WHDR_DONE
+    mov rcx, [hWaveIn]
+    mov rdx, rsi
+    mov r8d, 48
+    call waveInAddBuffer
+
+.pr_next:
+    inc ebx
+    cmp ebx, REC_BUF_COUNT
+    jb .pr_loop
+
 .pr_done:
     add rsp, 0x28
+    pop rsi
+    pop rbx
     ret
 
 ; ============================================================================
@@ -328,7 +657,7 @@ se_fx_normalize:
     lea rsi, [rax + rcx]
     mov r12d, edx
 
-    xor ebx, ebx                        ; maxAbs
+    xor ebx, ebx
     xor ecx, ecx
 .fn_scan:
     movzx eax, byte [rsi + rcx]
@@ -605,7 +934,7 @@ se_fx_trim:
 
     mov rdi, rax
     lea rsi, [rax + rcx]
-    mov ebx, edx                        ; neue Laenge
+    mov ebx, edx
     test ecx, ecx
     jz .ft_upd
     mov ecx, ebx
@@ -637,7 +966,9 @@ se_fx_trim:
     ret
 
 ; ============================================================================
-; ADSR-Synthesizer-Generator -> rendert 8-Bit-PCM in curInst (ECX = autoLoop)
+; ADSR-Synthesizer-Generator -> rendert 8-Bit-PCM in curInst
+; Eingabe: ECX = loopMode (0=aus, 1=Auto-Loop berechnen, 2=bestehenden Loop behalten)
+;          EDX = doPreview (0=stumm fuer Drag, 1=sofort vorhoeren)
 ; ============================================================================
 
 ; Oszillator-Sample fuer Phase EAX, Welle R8D (0..4), Puls-Schwelle R9D -> EAX (-128..127)
@@ -650,7 +981,6 @@ synth_osc_eval:
     je .so_pls
     cmp r8d, 3
     je .so_tri
-    ; Rauschen ueber lokalen LFSR in [rsp + 0x68] (Aufrufer-Frame)
     mov eax, [seSynthLfsr]
     mov edx, eax
     shl eax, 13
@@ -706,10 +1036,10 @@ synth_render_to_slot:
     push r15
     sub rsp, 0x68
 
-    mov [rsp + 0x20], ecx               ; autoLoop (0 oder 1)
+    mov [rsp + 0x20], ecx
+    mov [rsp + 0x60], edx
     mov dword [seSynthLfsr], 0x5EED1234
 
-    ; Gesamtdauer N = seDur * 441 (bei 22050 Hz: 2205..44100 Samples = 0,1..2,0 s)
     mov eax, [seParams + 4*4]
     cmp eax, 5
     jae .sr_d_ok
@@ -720,32 +1050,30 @@ synth_render_to_slot:
     jbe .sr_n_ok
     mov eax, MAX_SAMP_BYTES
 .sr_n_ok:
-    mov [rsp + 0x24], eax               ; totalN
+    mov [rsp + 0x24], eax
     mov r12d, eax
 
-    ; ADSR-Phasenlaengen berechnen (nA, nD, nR jeweils max. 40% von N)
     mov eax, r12d
     imul eax, [seParams + 0*4]
     xor edx, edx
     mov ecx, 250
     div ecx
-    mov [rsp + 0x28], eax               ; nA
+    mov [rsp + 0x28], eax
 
     mov eax, r12d
     imul eax, [seParams + 1*4]
     xor edx, edx
     mov ecx, 250
     div ecx
-    mov [rsp + 0x2C], eax               ; nD
+    mov [rsp + 0x2C], eax
 
     mov eax, r12d
     imul eax, [seParams + 3*4]
     xor edx, edx
     mov ecx, 250
     div ecx
-    mov [rsp + 0x34], eax               ; nR
+    mov [rsp + 0x34], eax
 
-    ; Sicherstellen, dass nA + nD + nR <= N
     mov eax, [rsp + 0x28]
     add eax, [rsp + 0x2C]
     add eax, [rsp + 0x34]
@@ -766,26 +1094,23 @@ synth_render_to_slot:
     jns .sr_ns_ok
     xor eax, eax
 .sr_ns_ok:
-    mov [rsp + 0x30], eax               ; nS
+    mov [rsp + 0x30], eax
     mov ecx, [rsp + 0x28]
     add ecx, [rsp + 0x2C]
     add ecx, eax
-    mov [rsp + 0x5C], ecx               ; rStart = nA + nD + nS
+    mov [rsp + 0x5C], ecx
 
-    ; Sustain-Pegel (0..32767)
     mov eax, [seParams + 2*4]
     imul eax, 32767
     xor edx, edx
     mov ecx, 100
     div ecx
-    mov [rsp + 0x38], eax               ; sustLvl
+    mov [rsp + 0x38], eax
 
-    ; Basis-Phaseninkrement fuer C-3 (130,8128 Hz bei 22050 Hz = 25478490)
     mov eax, 25478490
-    mov [rsp + 0x40], eax               ; baseInc
-    mov [rsp + 0x3C], eax               ; curInc
+    mov [rsp + 0x40], eax
+    mov [rsp + 0x3C], eax
 
-    ; Start-Offset bei Abwaerts-Sweep (seSweep < 50)
     mov ecx, [seParams + 5*4]
     cmp ecx, 50
     jae .sr_sw_ok
@@ -800,7 +1125,6 @@ synth_render_to_slot:
     mov [rsp + 0x3C], eax
 .sr_sw_ok:
 
-    ; Tiefpass-Alpha (12..256)
     mov eax, [seParams + 7*4]
     cmp eax, 5
     jae .sr_lp_ok
@@ -810,21 +1134,26 @@ synth_render_to_slot:
     xor edx, edx
     mov ecx, 100
     div ecx
-    mov [rsp + 0x50], eax               ; lpAlpha
+    mov [rsp + 0x50], eax
 
-    ; Puls-Schwelle (25..230)
     mov eax, [sePulse]
     imul eax, 255
     xor edx, edx
     mov ecx, 100
     div ecx
-    mov [rsp + 0x54], eax               ; pulseThr
+    mov [rsp + 0x54], eax
 
-    mov dword [rsp + 0x44], 0           ; ph1
-    mov dword [rsp + 0x48], 0           ; ph2
-    mov dword [rsp + 0x4C], 0           ; lpState
+    mov eax, [seParams + 8*4]
+    shl eax, 8
+    xor edx, edx
+    mov ecx, 100
+    div ecx
+    mov [rsp + 0x58], eax
 
-    ; Zielzeiger in pcmSlots[curInst]
+    mov dword [rsp + 0x44], 0
+    mov dword [rsp + 0x48], 0
+    mov dword [rsp + 0x4C], 0
+
     mov eax, [curInst]
     and eax, MAX_SAMPS - 1
     shl eax, 17
@@ -833,15 +1162,13 @@ synth_render_to_slot:
 
     mov r8d, [seWave]
     mov r9d, [rsp + 0x54]
-    xor ebx, ebx                        ; Sample-Zaehler i = 0..N-1
+    xor ebx, ebx
 
 .sr_loop:
-    ; 1. Pitch-Sweep aktualisieren
     mov ecx, [seParams + 5*4]
     cmp ecx, 50
     je .sr_sw_done
     jb .sr_sw_down
-    ; Aufwaerts-Sweep
     sub ecx, 50
     imul eax, ecx, 240
     add [rsp + 0x3C], eax
@@ -850,7 +1177,6 @@ synth_render_to_slot:
     mov dword [rsp + 0x3C], 0x08000000
     jmp .sr_sw_done
 .sr_sw_down:
-    ; Exponentieller Abwaerts-Sweep Richtung baseInc
     mov eax, [rsp + 0x3C]
     sub eax, [rsp + 0x40]
     jle .sr_sw_done
@@ -862,17 +1188,16 @@ synth_render_to_slot:
     sub [rsp + 0x3C], eax
 .sr_sw_done:
 
-    ; 2. Oszillator 1 (+ optional verstimmter Oszillator 2)
     mov eax, [rsp + 0x3C]
     add [rsp + 0x44], eax
     mov eax, [rsp + 0x44]
     call synth_osc_eval
-    mov r13d, eax                       ; osc1 (-128..127)
+    mov r13d, eax
 
-    mov ecx, [seParams + 6*4]           ; Detune
+    mov ecx, [seParams + 6*4]
     test ecx, ecx
     jz .sr_no_det
-    cmp r8d, 4                          ; Rauschen nicht doppeln
+    cmp r8d, 4
     je .sr_no_det
     mov eax, [rsp + 0x3C]
     imul rax, rcx
@@ -885,7 +1210,6 @@ synth_render_to_slot:
     sar r13d, 1
 .sr_no_det:
 
-    ; 3. Einpoliger Tiefpassfilter (16-Bit intern fuer feine Aufloesung)
     shl r13d, 8
     mov eax, r13d
     sub eax, [rsp + 0x4C]
@@ -895,8 +1219,7 @@ synth_render_to_slot:
     mov r13d, [rsp + 0x4C]
     sar r13d, 8
 
-    ; 4. ADSR-Huellkurve (r14d = 0..32767)
-    mov ecx, [rsp + 0x28]               ; nA
+    mov ecx, [rsp + 0x28]
     cmp ebx, ecx
     jae .sr_chk_d
     mov eax, ebx
@@ -908,8 +1231,8 @@ synth_render_to_slot:
 
 .sr_chk_d:
     mov r15d, ebx
-    sub r15d, ecx                       ; i - nA
-    mov ecx, [rsp + 0x2C]               ; nD
+    sub r15d, ecx
+    mov ecx, [rsp + 0x2C]
     cmp r15d, ecx
     jae .sr_chk_s
     mov eax, 32767
@@ -922,14 +1245,14 @@ synth_render_to_slot:
     jmp .sr_env_ok
 
 .sr_chk_s:
-    mov r15d, [rsp + 0x5C]              ; rStart
+    mov r15d, [rsp + 0x5C]
     cmp ebx, r15d
     jae .sr_chk_r
     mov r14d, [rsp + 0x38]
     jmp .sr_env_ok
 
 .sr_chk_r:
-    mov ecx, [rsp + 0x34]               ; nR
+    mov ecx, [rsp + 0x34]
     test ecx, ecx
     jz .sr_env_zero
     mov r15d, ebx
@@ -945,9 +1268,10 @@ synth_render_to_slot:
     xor r14d, r14d
 
 .sr_env_ok:
-    ; 5. Huellkurve anwenden und als 8-Bit-Unsigned speichern
     imul r13d, r14d
     sar r13d, 15
+    imul r13d, [rsp + 0x58]
+    sar r13d, 8
     add r13d, 128
     cmp r13d, 0
     jge .sr_c_hi
@@ -963,22 +1287,53 @@ synth_render_to_slot:
     cmp ebx, r12d
     jb .sr_loop
 
-    ; Slot-Metadaten aktualisieren
     mov ebx, [curInst]
     and ebx, MAX_SAMPS - 1
     lea rdx, [sampHasPcm]
+    movzx esi, byte [rdx + rbx]
     mov byte [rdx + rbx], 1
     lea rdx, [sampLenTbl]
     mov [rdx + rbx*4], r12d
     lea rdx, [sampC2Step]
-    mov dword [rdx + rbx*4], 16384      ; 22050 Hz -> C-3 Originalhoehe
+    mov dword [rdx + rbx*4], 16384
 
-    ; Loop-Punkte setzen (One-Shot oder Sustain-Loop)
-    cmp dword [rsp + 0x20], 0
-    je .sr_noloop
+    mov eax, [rsp + 0x20]
+    cmp eax, 2
+    jne .sr_chk_al
+
+    test esi, esi
+    jz .sr_use_autoloop
+    lea rdx, [sampLoopEndTbl]
+    mov ecx, [rdx + rbx*4]
+    cmp ecx, 0xFFFFF
+    jae .sr_name
+
+    cmp ecx, r12d
+    jbe .sr_keep_chk_s
+    mov ecx, r12d
+    mov [rdx + rbx*4], ecx
+.sr_keep_chk_s:
+    lea rdx, [sampLoopStartTbl]
+    mov eax, [rdx + rbx*4]
+    lea r8d, [rax + 16]
+    cmp r8d, ecx
+    jbe .sr_name
+    mov eax, ecx
+    sub eax, 16
+    jns .sr_keep_st_s
+    xor eax, eax
+.sr_keep_st_s:
+    mov [rdx + rbx*4], eax
+    jmp .sr_name
+
+.sr_use_autoloop:
+    mov eax, [seAutoLoop]
+.sr_chk_al:
+    test eax, eax
+    jz .sr_noloop
     mov eax, [rsp + 0x28]
-    add eax, [rsp + 0x2C]               ; LoopStart = Ende Decay
-    mov ecx, [rsp + 0x5C]               ; LoopEnd = Ende Sustain
+    add eax, [rsp + 0x2C]
+    mov ecx, [rsp + 0x5C]
     lea edx, [rax + 128]
     cmp ecx, edx
     ja .sr_lp_set
@@ -1014,8 +1369,12 @@ synth_render_to_slot:
     call samped_sync_sel
     lea rcx, [stSynOk]
     call set_status
-    mov al, 12                          ; Sofort auf C-3 vorhoeren
+
+    cmp dword [rsp + 0x60], 0
+    je .sr_no_prev
+    mov al, 12
     call samped_preview
+.sr_no_prev:
     mov dword [dirty], 1
 
     add rsp, 0x68
@@ -1029,7 +1388,7 @@ synth_render_to_slot:
     pop rbx
     ret
 
-; Preset (ECX = 0..5) laden und sofort in aktiven Slot rendern
+; Preset (ECX = 0..5) laden und sofort in aktiven Slot rendern (Lautstaerke bleibt erhalten)
 apply_synth_preset:
     push rbx
     sub rsp, 0x20
@@ -1052,9 +1411,192 @@ apply_synth_preset:
     cmp ecx, 8
     jb .asp_p
 
-    movzx ecx, byte [rsi + 10]          ; AutoLoop-Flag des Presets
+    movzx ecx, byte [rsi + 10]
+    mov [seAutoLoop], ecx
+    mov edx, 1
     call synth_render_to_slot
 
+    add rsp, 0x20
+    pop rbx
+    ret
+
+; ============================================================================
+; Drag-Helfer fuer Loop-Striche (seDragMode 1/2) und Slider (seDragMode 3)
+; ============================================================================
+
+; Loop-Start oder Loop-Ende anhand virtueller X-Position (ECX = 0..959) aktualisieren
+se_update_loop_drag:
+    push rbx
+    sub rsp, 0x20
+
+    mov ebx, [curInst]
+    and ebx, MAX_SAMPS - 1
+    lea rdx, [sampHasPcm]
+    cmp byte [rdx + rbx], 0
+    je .uld_done
+    lea rdx, [sampLenTbl]
+    mov r9d, [rdx + rbx*4]
+    cmp r9d, 32
+    jb .uld_done
+
+    mov eax, ecx
+    sub eax, 16
+    jns .uld_lo
+    xor eax, eax
+.uld_lo:
+    cmp eax, 928
+    jbe .uld_hi
+    mov eax, 928
+.uld_hi:
+    imul rax, r9
+    xor edx, edx
+    mov r8d, 928
+    div r8
+
+    cmp dword [seDragMode], 1
+    jne .uld_end
+
+    lea rdx, [sampLoopEndTbl]
+    mov r10d, [rdx + rbx*4]
+    cmp r10d, r9d
+    jbe .uld_e_ok
+    mov r10d, r9d
+.uld_e_ok:
+    sub r10d, 16
+    jns .uld_ms_ok
+    xor r10d, r10d
+.uld_ms_ok:
+    cmp eax, r10d
+    jbe .uld_st_s
+    mov eax, r10d
+.uld_st_s:
+    lea rdx, [sampLoopStartTbl]
+    mov [rdx + rbx*4], eax
+    mov dword [dirty], 1
+    jmp .uld_done
+
+.uld_end:
+    lea rdx, [sampLoopStartTbl]
+    mov r10d, [rdx + rbx*4]
+    add r10d, 16
+    cmp r10d, r9d
+    jbe .uld_me_ok
+    mov r10d, r9d
+.uld_me_ok:
+    cmp eax, r10d
+    jae .uld_st_e
+    mov eax, r10d
+.uld_st_e:
+    cmp eax, r9d
+    jbe .uld_st_e2
+    mov eax, r9d
+.uld_st_e2:
+    lea rdx, [sampLoopEndTbl]
+    mov [rdx + rbx*4], eax
+    mov dword [dirty], 1
+
+.uld_done:
+    add rsp, 0x20
+    pop rbx
+    ret
+
+; Slider-Wert anhand virtueller X-Position (ECX = 0..959) aktualisieren und live rendern
+se_update_slider_drag:
+    push rbx
+    sub rsp, 0x20
+
+    mov ebx, [seDragParam]
+    cmp ebx, 8
+    jbe .usd_p_ok
+    xor ebx, ebx
+.usd_p_ok:
+
+    mov eax, ecx
+    sub eax, 168
+    jns .usd_lo
+    xor eax, eax
+.usd_lo:
+    cmp eax, 480
+    jbe .usd_hi
+    mov eax, 480
+.usd_hi:
+    imul eax, 100
+    xor edx, edx
+    mov r8d, 480
+    div r8d
+
+    xor r8d, r8d
+    cmp ebx, 4
+    je .usd_min5
+    cmp ebx, 7
+    jne .usd_chk_min
+.usd_min5:
+    mov r8d, 5
+.usd_chk_min:
+    cmp eax, r8d
+    jae .usd_chk_max
+    mov eax, r8d
+.usd_chk_max:
+    cmp eax, 100
+    jbe .usd_cmp
+    mov eax, 100
+.usd_cmp:
+    lea rdx, [seParams]
+    cmp eax, [rdx + rbx*4]
+    je .usd_done
+    mov [rdx + rbx*4], eax
+    mov dword [dirty], 1
+
+    cmp dword [seLiveSynth], 0
+    je .usd_done
+    mov ecx, 2                          ; Bestehende Loop-Striche beibehalten
+    xor edx, edx
+    call synth_render_to_slot
+
+.usd_done:
+    add rsp, 0x20
+    pop rbx
+    ret
+
+; WM_MOUSEMOVE im Sample-Editor (ECX = lParam)
+samped_mouse_move:
+    sub rsp, 0x28
+    cmp dword [seDragMode], 0
+    je .smm_done
+    call se_lparam_to_px
+    mov ecx, eax
+    cmp dword [seDragMode], 3
+    je .smm_slider
+    call se_update_loop_drag
+    jmp .smm_done
+.smm_slider:
+    call se_update_slider_drag
+.smm_done:
+    add rsp, 0x28
+    ret
+
+; WM_LBUTTONUP nach Drag-Vorgang
+samped_mouse_up:
+    push rbx
+    sub rsp, 0x20
+
+    mov ebx, [seDragMode]
+    test ebx, ebx
+    jz .smu_done
+    mov dword [seDragMode], 0
+    call ReleaseCapture
+
+    cmp ebx, 3
+    jne .smu_redraw
+    cmp dword [seLiveSynth], 0
+    je .smu_redraw
+    mov al, 12
+    call samped_preview
+
+.smu_redraw:
+    mov dword [dirty], 1
+
+.smu_done:
     add rsp, 0x20
     pop rbx
     ret
@@ -1073,6 +1615,7 @@ samped_keydown:
 
     cmp ebx, VK_ESCAPE
     jne .sk_f1
+    mov dword [seDragMode], 0
     call stop_recording
     mov dword [sampEdMode], 0
     jmp .sk_done
@@ -1116,7 +1659,6 @@ samped_keydown:
     jmp .sk_done
 
 .sk_piano:
-    ; QWERTZ-Klaviatur spielt aktives Instrument direkt live vor
     test esi, 0x40000000
     jnz .sk_done
     mov eax, esi
@@ -1151,11 +1693,13 @@ samped_mouse_down:
     push rbx
     push r12
     push r13
+    push r14
+    push r15
     sub rsp, 0x20
 
-    mov r12d, ecx                       ; Spalte
-    mov r13d, edx                       ; Zeile
-    mov ebx, r8d                        ; Taste (0=Links, 1=Rechts)
+    mov r12d, ecx
+    mov r13d, edx
+    mov ebx, r8d
 
     ; Zeile 0 (Kopfzeile): Slot, Loop, Zurueck
     test r13d, r13d
@@ -1165,6 +1709,7 @@ samped_mouse_down:
     jb .sm_top_slot
     cmp r12d, 70
     ja .sm_done
+    mov dword [seDragMode], 0
     call stop_recording
     mov dword [sampEdMode], 0
     jmp .sm_done
@@ -1197,11 +1742,14 @@ samped_mouse_down:
     jmp .sm_done
 
 .sm_chk_wave:
-    ; Zeilen 2..19 (Wellenform): Auswahl-Marker (L/R) oder Loop-Marker (Shift+L/R)
+    ; Zeilen 2..19 (Wellenform): Loop-Striche L/E direkt greifen & ziehen oder Auswahl setzen
     cmp r13d, 2
     jb .sm_chk_act
     cmp r13d, 19
     ja .sm_chk_act
+
+    cmp dword [isRecording], 0
+    jne .sm_done
 
     call samped_sync_sel
     mov eax, [curInst]
@@ -1210,11 +1758,83 @@ samped_mouse_down:
     cmp byte [rdx + rax], 0
     je .sm_done
     lea rdx, [sampLenTbl]
-    mov r9d, [rdx + rax*4]              ; Sample-Laenge
-    test r9d, r9d
+    mov r14d, [rdx + rax*4]
+    test r14d, r14d
     jz .sm_done
 
-    ; Exakte Sample-Position aus mousePxX (Innenbereich 16..943, Breite 928 px)
+    mov ecx, VK_SHIFT
+    call GetKeyState
+    movzx r15d, ax
+    and r15d, 0x8000
+
+    test ebx, ebx
+    jnz .sm_wave_normal
+    test r15d, r15d
+    jnz .sm_wave_normal
+
+    mov ecx, [curInst]
+    and ecx, MAX_SAMPS - 1
+    lea rdx, [sampLoopEndTbl]
+    mov r10d, [rdx + rcx*4]
+    cmp r10d, r14d
+    ja .sm_wave_normal
+    lea rdx, [sampLoopStartTbl]
+    mov r11d, [rdx + rcx*4]
+    cmp r10d, r11d
+    jbe .sm_wave_normal
+
+    mov eax, r11d
+    imul rax, 928
+    xor edx, edx
+    div r14
+    cmp eax, 926
+    jbe .sm_ps_ok
+    mov eax, 926
+.sm_ps_ok:
+    add eax, 16
+    mov r11d, [mousePxX]
+    sub r11d, eax
+    jns .sm_d1_pos
+    neg r11d
+.sm_d1_pos:
+
+    mov eax, r10d
+    imul rax, 928
+    xor edx, edx
+    div r14
+    cmp eax, 926
+    jbe .sm_pe_ok
+    mov eax, 926
+.sm_pe_ok:
+    add eax, 16
+    mov r10d, [mousePxX]
+    sub r10d, eax
+    jns .sm_d2_pos
+    neg r10d
+.sm_d2_pos:
+
+    cmp r11d, 18
+    jbe .sm_grab_hit
+    cmp r10d, 18
+    ja .sm_wave_normal
+
+.sm_grab_hit:
+    mov dword [seDragMode], 1
+    cmp r11d, r10d
+    jb .sm_grab_go
+    ja .sm_grab_end
+    cmp r13d, 10
+    jbe .sm_grab_go
+.sm_grab_end:
+    mov dword [seDragMode], 2
+.sm_grab_go:
+    mov rcx, [hWnd]
+    call SetCapture
+    mov ecx, [mousePxX]
+    call se_update_loop_drag
+    jmp .sm_done
+
+.sm_wave_normal:
     mov eax, [mousePxX]
     sub eax, 16
     jns .sm_px_lo
@@ -1224,16 +1844,13 @@ samped_mouse_down:
     jbe .sm_px_hi
     mov eax, 927
 .sm_px_hi:
-    imul rax, r9
+    imul rax, r14
     xor edx, edx
     mov ecx, 928
     div rcx
-    mov r10d, eax                       ; Sample-Position 0..len-1
+    mov r10d, eax
 
-    ; Pruefen ob Shift gedrueckt (Loop-Punkte statt Auswahl setzen)
-    mov ecx, VK_SHIFT
-    call GetKeyState
-    test ax, 0x8000
+    test r15d, r15d
     jnz .sm_wave_loop
 
     test ebx, ebx
@@ -1241,7 +1858,7 @@ samped_mouse_down:
     mov [seSelStart], r10d
     cmp r10d, [seSelEnd]
     jbe .sm_done
-    mov [seSelEnd], r9d
+    mov [seSelEnd], r14d
     jmp .sm_done
 .sm_sel_end:
     inc r10d
@@ -1264,7 +1881,7 @@ samped_mouse_down:
     cmp [rdx + rcx*4], r10d
     ja .sm_done
 .sm_lp_autoe:
-    mov [rdx + rcx*4], r9d
+    mov [rdx + rcx*4], r14d
     jmp .sm_done
 .sm_lp_end:
     inc r10d
@@ -1426,7 +2043,7 @@ samped_mouse_down:
     jmp .sm_done
 
 .sm_chk_swave:
-    ; Zeile 28 (Synth-Wellenform und Pulsbreite)
+    ; Zeile 28 (Synth-Wellenform und Pulsbreite -> bei Live-Synth sofort rendern, Loop behalten)
     cmp r13d, 28
     jne .sm_chk_sliders
 
@@ -1449,6 +2066,11 @@ samped_mouse_down:
     mov eax, 10
 .sm_pw_st:
     mov [sePulse], eax
+    cmp dword [seLiveSynth], 0
+    je .sm_done
+    mov ecx, 2
+    mov edx, 1
+    call synth_render_to_slot
     jmp .sm_done
 
 .sm_sw_btns:
@@ -1468,33 +2090,37 @@ samped_mouse_down:
     cmp edx, 9
     jae .sm_done
     mov [seWave], eax
+    cmp dword [seLiveSynth], 0
+    je .sm_done
+    mov ecx, 2
+    mov edx, 1
+    call synth_render_to_slot
     jmp .sm_done
 
 .sm_chk_sliders:
-    ; Zeilen 30..37 (8 ADSR- / Synth-Parameter-Slider)
+    ; Zeilen 30..38 (9 ADSR-, Synth- und Lautstaerke-Slider mit Live-Drag)
     cmp r13d, 30
     jb .sm_chk_presets
-    cmp r13d, 37
+    cmp r13d, 38
     ja .sm_chk_presets
 
     mov ecx, r13d
-    sub ecx, 30                         ; Parameter-Index 0..7
+    sub ecx, 30
     lea rdx, [seParams]
 
-    ; Klick direkt in den Balken (Spalten 14..53)
     cmp r12d, 14
     jb .sm_done
     cmp r12d, 53
     ja .sm_sl_minus
-    mov eax, r12d
-    sub eax, 14
-    imul eax, 100
-    push rdx
-    xor edx, edx
-    mov r8d, 39
-    div r8d
-    pop rdx
-    jmp .sm_sl_clamp
+    test ebx, ebx
+    jnz .sm_done
+    mov dword [seDragMode], 3
+    mov [seDragParam], ecx
+    mov rcx, [hWnd]
+    call SetCapture
+    mov ecx, [mousePxX]
+    call se_update_slider_drag
+    jmp .sm_done
 
 .sm_sl_minus:
     cmp r12d, 55
@@ -1514,10 +2140,10 @@ samped_mouse_down:
     add eax, 5
 
 .sm_sl_clamp:
-    mov r8d, 0
-    cmp ecx, 4                          ; Dauer min. 5
+    xor r8d, r8d
+    cmp ecx, 4
     je .sm_min5
-    cmp ecx, 7                          ; Filter min. 5
+    cmp ecx, 7
     jne .sm_chk_min
 .sm_min5:
     mov r8d, 5
@@ -1531,11 +2157,16 @@ samped_mouse_down:
     mov eax, 100
 .sm_sl_st:
     mov [rdx + rcx*4], eax
+    cmp dword [seLiveSynth], 0
+    je .sm_done
+    mov ecx, 2
+    mov edx, 1
+    call synth_render_to_slot
     jmp .sm_done
 
 .sm_chk_presets:
-    ; Zeile 39 (6 Synth-Presets)
-    cmp r13d, 39
+    ; Zeile 40 (6 Synth-Presets)
+    cmp r13d, 40
     jne .sm_chk_render
     test ebx, ebx
     jnz .sm_done
@@ -1557,46 +2188,105 @@ samped_mouse_down:
     jmp .sm_done
 
 .sm_chk_render:
-    ; Zeile 41 (Rendern + Auto-Loop + Slot -/+)
-    cmp r13d, 41
-    jne .sm_chk_bot
+    ; Zeile 42: [LIVE-SYNTH:AN ] [AUTO-LOOP:AUS] [-> Slot] [Slot  -] [Slot  +]
+    cmp r13d, 42
+    jne .sm_chk_recbar
     test ebx, ebx
     jnz .sm_done
 
     cmp r12d, 3
     jb .sm_done
-    cmp r12d, 28
-    ja .sm_ren_loop
-    xor ecx, ecx
+    cmp r12d, 18
+    ja .sm_ren_al
+    xor dword [seLiveSynth], 1
+    jmp .sm_done
+
+.sm_ren_al:
+    cmp r12d, 20
+    jb .sm_done
+    cmp r12d, 34
+    ja .sm_ren_now
+    xor dword [seAutoLoop], 1
+    cmp dword [seLiveSynth], 0
+    je .sm_done
+    mov ecx, [seAutoLoop]
+    mov edx, 1
     call synth_render_to_slot
     jmp .sm_done
 
-.sm_ren_loop:
-    cmp r12d, 31
+.sm_ren_now:
+    cmp r12d, 36
     jb .sm_done
-    cmp r12d, 55
-    ja .sm_ren_slot
-    mov ecx, 1
+    cmp r12d, 44
+    ja .sm_ren_sm
+    mov ecx, 2
+    mov edx, 1
     call synth_render_to_slot
     jmp .sm_done
 
-.sm_ren_slot:
-    cmp r12d, 58
+.sm_ren_sm:
+    cmp r12d, 46
     jb .sm_done
-    cmp r12d, 76
-    ja .sm_done
+    cmp r12d, 54
+    ja .sm_ren_sp
     mov eax, [curInst]
-    cmp r12d, 67
-    jb .sm_rs_dec
-    inc eax
-    jmp .sm_rs_st
-.sm_rs_dec:
     dec eax
-.sm_rs_st:
     and eax, MAX_SAMPS - 1
     mov [curInst], eax
     call sync_samp_scroll
     call samped_sync_sel
+    jmp .sm_done
+
+.sm_ren_sp:
+    cmp r12d, 56
+    jb .sm_done
+    cmp r12d, 64
+    ja .sm_done
+    mov eax, [curInst]
+    inc eax
+    and eax, MAX_SAMPS - 1
+    mov [curInst], eax
+    call sync_samp_scroll
+    call samped_sync_sel
+    jmp .sm_done
+
+.sm_chk_recbar:
+    ; Zeile 47 (Aufnahmegeraet-Auswahl: [<] Spalten 6..8, Name 10..37, [>] 39..41)
+    cmp r13d, 47
+    jne .sm_chk_bot
+
+    cmp r12d, 6
+    jb .sm_done
+    cmp r12d, 8
+    ja .sm_rb_name
+    test ebx, ebx
+    jnz .sm_done
+    mov ecx, -1
+    call samped_cycle_rec_dev
+    jmp .sm_done
+
+.sm_rb_name:
+    cmp r12d, 10
+    jb .sm_done
+    cmp r12d, 37
+    ja .sm_rb_next
+    mov ecx, 1
+    test ebx, ebx
+    jz .sm_rb_go
+    mov ecx, -1
+.sm_rb_go:
+    call samped_cycle_rec_dev
+    jmp .sm_done
+
+.sm_rb_next:
+    cmp r12d, 39
+    jb .sm_done
+    cmp r12d, 41
+    ja .sm_done
+    test ebx, ebx
+    jnz .sm_done
+    mov ecx, 1
+    call samped_cycle_rec_dev
     jmp .sm_done
 
 .sm_chk_bot:
@@ -1675,11 +2365,14 @@ samped_mouse_down:
     jb .sm_done
     cmp r12d, 69
     ja .sm_done
+    mov dword [seDragMode], 0
     call stop_recording
     mov dword [sampEdMode], 0
 
 .sm_done:
     add rsp, 0x20
+    pop r15
+    pop r14
     pop r13
     pop r12
     pop rbx
@@ -1701,7 +2394,6 @@ draw_samped_screen:
 
     call samped_sync_sel
 
-    ; Hintergrund
     xor ecx, ecx
     xor edx, edx
     mov r8d, WIN_W
@@ -1709,13 +2401,12 @@ draw_samped_screen:
     mov r10d, COL_BG
     call fill_rect
 
-    ; Aktuellen Slot & Metadaten ermitteln
     mov ebx, [curInst]
     and ebx, MAX_SAMPS - 1
     lea rdx, [sampHasPcm]
-    movzx r12d, byte [rdx + rbx]        ; r12d = hasPcm
+    movzx r12d, byte [rdx + rbx]
     lea rdx, [sampLenTbl]
-    mov r13d, [rdx + rbx*4]             ; r13d = len
+    mov r13d, [rdx + rbx*4]
 
     ; --- Zeile 0: Kopfzeile ---
     mov al, bl
@@ -1731,6 +2422,10 @@ draw_samped_screen:
     rep movsb
 
     mov eax, r13d
+    cmp dword [isRecording], 0
+    je .ds_top_len
+    mov eax, [recWritePos]
+.ds_top_len:
     lea r8, [seTopBar + 41]
     call fmt_hex5
 
@@ -1762,6 +2457,10 @@ draw_samped_screen:
     mov r8d, 936
     mov r9d, 216
     mov r10d, COL_HDR_ON
+    cmp dword [isRecording], 0
+    je .ds_wf_frame
+    mov r10d, COL_PURPHI
+.ds_wf_frame:
     call fill_rect
 
     mov ecx, 16
@@ -1770,6 +2469,10 @@ draw_samped_screen:
     mov r9d, 208
     mov r10d, COL_BLACK
     call fill_rect
+
+    ; Waehrend der Aufnahme live wachsende Wellenform aus recBuf zeichnen
+    cmp dword [isRecording], 0
+    jne .ds_rec_wf
 
     test r12d, r12d
     jz .ds_no_pcm
@@ -1781,13 +2484,13 @@ draw_samped_screen:
     imul rax, 928
     xor edx, edx
     div r13
-    mov r14d, eax                       ; selX0 (0..927)
+    mov r14d, eax
 
     mov eax, [seSelEnd]
     imul rax, 928
     xor edx, edx
     div r13
-    mov r15d, eax                       ; selX1 (0..928)
+    mov r15d, eax
     cmp r15d, r14d
     jbe .ds_no_sel_bg
     lea ecx, [r14 + 16]
@@ -1807,27 +2510,27 @@ draw_samped_screen:
     mov r10d, COL_DOT
     call fill_rect
 
-    ; Wellenform in 464 Spalten a 2 px zeichnen (Min/Max pro Spalte)
+    ; Wellenform in 464 Spalten a 2 px zeichnen
     mov eax, ebx
     shl eax, 17
     lea rbp, [pcmSlots]
-    add rbp, rax                        ; rbp = Sample-Basiszeiger
+    add rbp, rax
 
-    xor edi, edi                        ; colPx = 0..463
+    xor edi, edi
 .ds_wf_loop:
     mov eax, edi
     imul rax, r13
     xor edx, edx
     mov ecx, 464
     div rcx
-    mov r8d, eax                        ; startIdx
+    mov r8d, eax
 
     lea eax, [edi + 1]
     imul rax, r13
     xor edx, edx
     mov ecx, 464
     div rcx
-    mov r9d, eax                        ; endIdx
+    mov r9d, eax
     cmp r9d, r8d
     ja .ds_wf_span
     lea r9d, [r8 + 1]
@@ -1836,7 +2539,6 @@ draw_samped_screen:
     jbe .ds_wf_cap
     mov r9d, r13d
 .ds_wf_cap:
-    ; Maximal 16 Stuetzpunkte pro Spalte pruefen (konstante Geschwindigkeit)
     mov ecx, r9d
     sub ecx, r8d
     mov r11d, 1
@@ -1845,8 +2547,8 @@ draw_samped_screen:
     mov r11d, ecx
     shr r11d, 4
 .ds_wf_step:
-    mov r10d, 128                       ; minVal
-    mov esi, 128                        ; maxVal
+    mov r10d, 128
+    mov esi, 128
     mov ecx, r8d
 .ds_wf_mm:
     movzx eax, byte [rbp + rcx]
@@ -1862,31 +2564,30 @@ draw_samped_screen:
     cmp ecx, r9d
     jb .ds_wf_mm
 
-    ; Y-Koordinaten berechnen (yTop aus maxVal, yBot aus minVal)
     mov eax, esi
     sub eax, 128
     imul eax, 100
     sar eax, 7
     mov ecx, 132
-    sub ecx, eax                        ; yTop
+    sub ecx, eax
 
     mov eax, r10d
     sub eax, 128
     imul eax, 100
     sar eax, 7
     mov edx, 132
-    sub edx, eax                        ; yBot
+    sub edx, eax
     cmp edx, ecx
     jge .ds_wf_h
     xchg ecx, edx
 .ds_wf_h:
     sub edx, ecx
     inc edx
-    mov r9d, edx                        ; Hoehe
-    mov edx, ecx                        ; Y
+    mov r9d, edx
+    mov edx, ecx
 
-    lea ecx, [rdi*2 + 16]               ; X
-    mov r8d, 2                          ; Breite 2 px
+    lea ecx, [rdi*2 + 16]
+    mov r8d, 2
     mov r10d, COL_TEAL
     lea eax, [rdi*2]
     cmp eax, r14d
@@ -1901,7 +2602,7 @@ draw_samped_screen:
     cmp edi, 464
     jb .ds_wf_loop
 
-    ; Loop-Linien ueber der Wellenform einzeichnen, falls Loop aktiv
+    ; Loop-Linien mit greifbaren Anfassern (L oben, E unten) einzeichnen
     lea rdx, [sampLoopEndTbl]
     mov r15d, [rdx + rbx*4]
     cmp r15d, r13d
@@ -1911,17 +2612,60 @@ draw_samped_screen:
     cmp r15d, r14d
     jbe .ds_wf_done
 
+    ; --- Loop-Start-Strich + Griff [L] oben ---
     mov eax, r14d
     imul rax, 928
     xor edx, edx
     div r13
-    lea ecx, [rax + 16]
+    cmp eax, 926
+    jbe .ds_lps_ok
+    mov eax, 926
+.ds_lps_ok:
+    add eax, 16
+    mov [rsp + 0x40], eax
+
+    mov ecx, eax
     mov edx, 28
     mov r8d, 2
     mov r9d, 208
     mov r10d, COL_WHITE
+    cmp dword [seDragMode], 1
+    jne .ds_lps_col
+    mov r8d, 3
+    mov r10d, COL_CURSOR
+.ds_lps_col:
     call fill_rect
 
+    mov eax, [rsp + 0x40]
+    sub eax, 6
+    cmp eax, 16
+    jge .ds_lps_gx1
+    mov eax, 16
+.ds_lps_gx1:
+    cmp eax, 930
+    jle .ds_lps_gx2
+    mov eax, 930
+.ds_lps_gx2:
+    mov [rsp + 0x44], eax
+    mov ecx, eax
+    mov edx, 28
+    mov r8d, 14
+    mov r9d, 14
+    mov r10d, COL_WHITE
+    cmp dword [seDragMode], 1
+    jne .ds_lps_gcol
+    mov r10d, COL_CURSOR
+.ds_lps_gcol:
+    call fill_rect
+
+    mov ecx, [rsp + 0x44]
+    add ecx, 3
+    mov edx, 29
+    lea r8, [txtLoopL]
+    mov r10d, COL_BLACK
+    call draw_char_px
+
+    ; --- Loop-Ende-Strich + Griff [E] unten ---
     mov eax, r15d
     imul rax, 928
     xor edx, edx
@@ -1930,11 +2674,157 @@ draw_samped_screen:
     jbe .ds_lpe_ok
     mov eax, 926
 .ds_lpe_ok:
-    lea ecx, [rax + 16]
+    add eax, 16
+    mov [rsp + 0x40], eax
+
+    mov ecx, eax
     mov edx, 28
     mov r8d, 2
     mov r9d, 208
     mov r10d, COL_PURPHI
+    cmp dword [seDragMode], 2
+    jne .ds_lpe_col
+    mov r8d, 3
+    mov r10d, COL_CURSOR
+.ds_lpe_col:
+    call fill_rect
+
+    mov eax, [rsp + 0x40]
+    sub eax, 6
+    cmp eax, 16
+    jge .ds_lpe_gx1
+    mov eax, 16
+.ds_lpe_gx1:
+    cmp eax, 930
+    jle .ds_lpe_gx2
+    mov eax, 930
+.ds_lpe_gx2:
+    mov [rsp + 0x44], eax
+    mov ecx, eax
+    mov edx, 222
+    mov r8d, 14
+    mov r9d, 14
+    mov r10d, COL_PURPHI
+    cmp dword [seDragMode], 2
+    jne .ds_lpe_gcol
+    mov r10d, COL_CURSOR
+.ds_lpe_gcol:
+    call fill_rect
+
+    mov ecx, [rsp + 0x44]
+    add ecx, 3
+    mov edx, 223
+    lea r8, [txtLoopE]
+    mov r10d, COL_WHITE
+    cmp dword [seDragMode], 2
+    jne .ds_lpe_tcol
+    mov r10d, COL_BLACK
+.ds_lpe_tcol:
+    call draw_char_px
+    jmp .ds_wf_done
+
+.ds_rec_wf:
+    ; Live-Aufnahme-Wellenform ueber das 5,9-Sekunden-Zeitfenster zeichnen
+    mov ecx, 16
+    mov edx, 132
+    mov r8d, 928
+    mov r9d, 1
+    mov r10d, COL_DOT
+    call fill_rect
+
+    mov r15d, [recWritePos]
+    mov eax, r15d
+    imul rax, 464
+    shr rax, 17
+    cmp eax, 464
+    jbe .ds_rwf_cc
+    mov eax, 464
+.ds_rwf_cc:
+    mov r14d, eax                       ; Anzahl bereits gefuellter 2-px-Spalten
+    test r14d, r14d
+    jz .ds_rwf_head
+
+    lea rbp, [recBuf]
+    xor edi, edi
+.ds_rwf_loop:
+    mov eax, edi
+    shl rax, 17
+    xor edx, edx
+    mov ecx, 464
+    div rcx
+    mov r8d, eax
+
+    lea eax, [edi + 1]
+    shl rax, 17
+    xor edx, edx
+    mov ecx, 464
+    div rcx
+    mov r9d, eax
+    cmp r9d, r15d
+    jbe .ds_rwf_cap
+    mov r9d, r15d
+.ds_rwf_cap:
+    cmp r9d, r8d
+    jbe .ds_rwf_next
+
+    mov r10d, 128
+    mov esi, 128
+    mov ecx, r8d
+.ds_rwf_mm:
+    movzx eax, byte [rbp + rcx]
+    cmp eax, r10d
+    jae .ds_rwf_nmin
+    mov r10d, eax
+.ds_rwf_nmin:
+    cmp eax, esi
+    jbe .ds_rwf_nmax
+    mov esi, eax
+.ds_rwf_nmax:
+    add ecx, 16
+    cmp ecx, r9d
+    jb .ds_rwf_mm
+
+    mov eax, esi
+    sub eax, 128
+    imul eax, 100
+    sar eax, 7
+    mov ecx, 132
+    sub ecx, eax
+
+    mov eax, r10d
+    sub eax, 128
+    imul eax, 100
+    sar eax, 7
+    mov edx, 132
+    sub edx, eax
+    cmp edx, ecx
+    jge .ds_rwf_h
+    xchg ecx, edx
+.ds_rwf_h:
+    sub edx, ecx
+    inc edx
+    mov r9d, edx
+    mov edx, ecx
+    lea ecx, [rdi*2 + 16]
+    mov r8d, 2
+    mov r10d, COL_PURPHI
+    call fill_rect
+
+.ds_rwf_next:
+    inc edi
+    cmp edi, r14d
+    jb .ds_rwf_loop
+
+.ds_rwf_head:
+    lea ecx, [r14*2 + 16]
+    cmp ecx, 942
+    jbe .ds_rwf_hd_ok
+    mov ecx, 942
+.ds_rwf_hd_ok:
+    mov edx, 28
+    mov r8d, 2
+    mov r9d, 208
+    mov r10d, COL_WHITE
     call fill_rect
     jmp .ds_wf_done
 
@@ -1946,10 +2836,10 @@ draw_samped_screen:
     mov r10d, COL_DOT
     call fill_rect
 
-    mov ecx, 6
+    mov ecx, 2
     mov edx, 10
     lea r8, [seEmptyMsg]
-    mov r9d, 68
+    mov r9d, 76
     mov r10d, COL_NOTE
     call draw_text
 
@@ -1978,7 +2868,6 @@ draw_samped_screen:
     call draw_text
 
     ; --- Zeile 22: Aktions-Buttons ---
-    ; [WAV Laden] (1..11)
     mov ecx, 1 * CHAR_W
     mov edx, 22 * CHAR_H
     mov r8d, 11 * CHAR_W
@@ -1992,7 +2881,6 @@ draw_samped_screen:
     mov r10d, COL_WHITE
     call draw_text
 
-    ; [REC Start] / [REC Stop!] (13..23)
     mov ecx, 13 * CHAR_W
     mov edx, 22 * CHAR_H
     mov r8d, 11 * CHAR_W
@@ -2012,7 +2900,6 @@ draw_samped_screen:
     mov r10d, COL_WHITE
     call draw_text
 
-    ; [Vorhoeren] (25..35)
     mov ecx, 25 * CHAR_W
     mov edx, 22 * CHAR_H
     mov r8d, 11 * CHAR_W
@@ -2026,7 +2913,6 @@ draw_samped_screen:
     mov r10d, COL_WHITE
     call draw_text
 
-    ; [StopTon] (37..45)
     mov ecx, 37 * CHAR_W
     mov edx, 22 * CHAR_H
     mov r8d, 9 * CHAR_W
@@ -2040,7 +2926,6 @@ draw_samped_screen:
     mov r10d, COL_WHITE
     call draw_text
 
-    ; [Loop:ON] / [LoopOFF] (47..55)
     mov ecx, 47 * CHAR_W
     mov edx, 22 * CHAR_H
     mov r8d, 9 * CHAR_W
@@ -2063,7 +2948,6 @@ draw_samped_screen:
     mov r10d, COL_WHITE
     call draw_text
 
-    ; [Sel->Lp] (57..65)
     mov ecx, 57 * CHAR_W
     mov edx, 22 * CHAR_H
     mov r8d, 9 * CHAR_W
@@ -2077,7 +2961,6 @@ draw_samped_screen:
     mov r10d, COL_WHITE
     call draw_text
 
-    ; [Trim] (67..72)
     mov ecx, 67 * CHAR_W
     mov edx, 22 * CHAR_H
     mov r8d, 6 * CHAR_W
@@ -2091,7 +2974,6 @@ draw_samped_screen:
     mov r10d, COL_WHITE
     call draw_text
 
-    ; [Syn] (74..78)
     mov ecx, 74 * CHAR_W
     mov edx, 22 * CHAR_H
     mov r8d, 5 * CHAR_W
@@ -2113,7 +2995,6 @@ draw_samped_screen:
     mov r10d, COL_TEAL
     call draw_text
 
-    ; 7 Effekt-Buttons anhand Tabelle seFxBtnPos (Startspalte, Breite)
     xor edi, edi
 .ds_fxb_loop:
     lea rsi, [seFxBtnPos]
@@ -2149,7 +3030,7 @@ draw_samped_screen:
     cmp edi, 7
     jb .ds_fxb_loop
 
-    ; --- Zeilen 26..45: Synth- / Instrument-Designer ---
+    ; --- Zeilen 26..45: Synth- / Instrument-Designer (20 Zeilen hoch) ---
     mov ecx, 1 * CHAR_W
     mov edx, 26 * CHAR_H
     mov r8d, 78 * CHAR_W
@@ -2164,7 +3045,6 @@ draw_samped_screen:
     mov r10d, COL_BLACK
     call fill_rect
 
-    ; Titelbalken Zeile 26
     mov ecx, 1 * CHAR_W
     mov edx, 26 * CHAR_H
     mov r8d, 78 * CHAR_W
@@ -2229,12 +3109,11 @@ draw_samped_screen:
     mov r10d, COL_CYAN
     call draw_text
 
-    ; Zeilen 30..37: 8 grafische Parameter-Slider
+    ; Zeilen 30..38: 9 grafische Parameter-Slider (inkl. Lautstaerke)
     xor edi, edi
 .ds_sl_loop:
-    lea r14d, [rdi + 30]                ; Bildschirmzeile
+    lea r14d, [rdi + 30]
 
-    ; Parametername (Spalten 3..12)
     imul eax, edi, 10
     lea r8, [seParamNames]
     add r8, rax
@@ -2244,7 +3123,6 @@ draw_samped_screen:
     mov r10d, COL_NOTE
     call draw_text
 
-    ; Balken-Hintergrund (Spalten 14..53 = 480 px)
     mov ecx, 14 * CHAR_W
     mov edx, r14d
     imul edx, CHAR_H
@@ -2254,9 +3132,8 @@ draw_samped_screen:
     mov r10d, COL_BEAT
     call fill_rect
 
-    ; Gefuellter Balkenanteil
     lea rsi, [seParams]
-    mov r15d, [rsi + rdi*4]             ; Wert 0..100
+    mov r15d, [rsi + rdi*4]
     imul eax, r15d, 480
     xor edx, edx
     mov ecx, 100
@@ -2269,15 +3146,23 @@ draw_samped_screen:
     add edx, 2
     mov r8d, eax
     mov r9d, CHAR_H - 4
-    mov r10d, COL_PURPHI
-    cmp edi, 4
-    jae .ds_sl_col2
     mov r10d, COL_CYAN
-.ds_sl_col2:
+    cmp edi, 4
+    jb .ds_sl_chkdrag
+    mov r10d, COL_PURPHI
+    cmp edi, 8
+    jb .ds_sl_chkdrag
+    mov r10d, COL_NOTE
+.ds_sl_chkdrag:
+    cmp dword [seDragMode], 3
+    jne .ds_sl_drawbar
+    cmp edi, [seDragParam]
+    jne .ds_sl_drawbar
+    mov r10d, COL_CURSOR
+.ds_sl_drawbar:
     call fill_rect
 .ds_sl_nobar:
 
-    ; [-] Button (55..57)
     mov ecx, 55 * CHAR_W
     mov edx, r14d
     imul edx, CHAR_H
@@ -2292,7 +3177,6 @@ draw_samped_screen:
     mov r10d, COL_WHITE
     call draw_text
 
-    ; Zahlenwert (59..61)
     mov eax, r15d
     lea r8, [lineBuf]
     call fmt_dec3
@@ -2303,7 +3187,6 @@ draw_samped_screen:
     mov r10d, COL_WHITE
     call draw_text
 
-    ; [+] Button (63..65)
     mov ecx, 63 * CHAR_W
     mov edx, r14d
     imul edx, CHAR_H
@@ -2318,7 +3201,6 @@ draw_samped_screen:
     mov r10d, COL_WHITE
     call draw_text
 
-    ; Kurzer Beschreibungstext (67..77)
     imul eax, edi, 11
     lea r8, [seParamHints]
     add r8, rax
@@ -2329,12 +3211,12 @@ draw_samped_screen:
     call draw_text
 
     inc edi
-    cmp edi, 8
+    cmp edi, 9
     jb .ds_sl_loop
 
-    ; Zeile 39: 6 Presets
+    ; Zeile 40: 6 Presets
     mov ecx, 3
-    mov edx, 39
+    mov edx, 40
     lea r8, [sePresetBar + 3]
     mov r9d, 8
     mov r10d, COL_TEAL
@@ -2346,14 +3228,14 @@ draw_samped_screen:
     add r14d, 12
     mov ecx, r14d
     imul ecx, CHAR_W
-    mov edx, 39 * CHAR_H
+    mov edx, 40 * CHAR_H
     mov r8d, 9 * CHAR_W
     mov r9d, CHAR_H
     mov r10d, COL_HDR_ON
     call fill_rect
 
     mov ecx, r14d
-    mov edx, 39
+    mov edx, 40
     lea r8, [sePresetBar]
     add r8, r14
     mov r9d, 9
@@ -2364,43 +3246,83 @@ draw_samped_screen:
     cmp edi, 6
     jb .ds_pr_loop
 
-    ; Zeile 41: Rendern-Buttons + Slot -/+
+    ; Zeile 42: [LIVE-SYNTH:AN ] [AUTO-LOOP:AUS] [-> Slot] [Slot  -] [Slot  +]
     mov ecx, 3 * CHAR_W
-    mov edx, 41 * CHAR_H
-    mov r8d, 26 * CHAR_W
+    mov edx, 42 * CHAR_H
+    mov r8d, 16 * CHAR_W
     mov r9d, CHAR_H
-    mov r10d, COL_PURPHI
+    mov r10d, COL_HDR_OFF
+    lea r14, [txtLiveOff]
+    mov r15d, COL_WHITE
+    cmp dword [seLiveSynth], 0
+    je .ds_live_b
+    mov r10d, COL_CURSOR
+    lea r14, [txtLiveOn]
+    mov r15d, COL_BLACK
+.ds_live_b:
     call fill_rect
     mov ecx, 3
-    mov edx, 41
-    lea r8, [seRenderBar + 3]
-    mov r9d, 26
-    mov r10d, COL_BLACK
+    mov edx, 42
+    mov r8, r14
+    mov r9d, 16
+    mov r10d, r15d
     call draw_text
 
-    mov ecx, 31 * CHAR_W
-    mov edx, 41 * CHAR_H
-    mov r8d, 25 * CHAR_W
+    mov ecx, 20 * CHAR_W
+    mov edx, 42 * CHAR_H
+    mov r8d, 15 * CHAR_W
     mov r9d, CHAR_H
+    mov r10d, COL_HDR_OFF
+    lea r14, [txtAlOff]
+    cmp dword [seAutoLoop], 0
+    je .ds_al_b
     mov r10d, COL_HDR_ON
+    lea r14, [txtAlOn]
+.ds_al_b:
     call fill_rect
-    mov ecx, 31
-    mov edx, 41
-    lea r8, [seRenderBar + 31]
-    mov r9d, 25
+    mov ecx, 20
+    mov edx, 42
+    mov r8, r14
+    mov r9d, 15
     mov r10d, COL_WHITE
     call draw_text
 
-    mov ecx, 58 * CHAR_W
-    mov edx, 41 * CHAR_H
-    mov r8d, 19 * CHAR_W
+    mov ecx, 36 * CHAR_W
+    mov edx, 42 * CHAR_H
+    mov r8d, 9 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_PURPHI
+    call fill_rect
+    mov ecx, 36
+    mov edx, 42
+    lea r8, [seRenderBar + 36]
+    mov r9d, 9
+    mov r10d, COL_BLACK
+    call draw_text
+
+    mov ecx, 46 * CHAR_W
+    mov edx, 42 * CHAR_H
+    mov r8d, 9 * CHAR_W
     mov r9d, CHAR_H
     mov r10d, COL_BEAT
     call fill_rect
-    mov ecx, 58
-    mov edx, 41
-    lea r8, [seRenderBar + 58]
-    mov r9d, 19
+    mov ecx, 46
+    mov edx, 42
+    lea r8, [seRenderBar + 46]
+    mov r9d, 9
+    mov r10d, COL_CYAN
+    call draw_text
+
+    mov ecx, 56 * CHAR_W
+    mov edx, 42 * CHAR_H
+    mov r8d, 9 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_BEAT
+    call fill_rect
+    mov ecx, 56
+    mov edx, 42
+    lea r8, [seRenderBar + 56]
+    mov r9d, 9
     mov r10d, COL_CYAN
     call draw_text
 
@@ -2419,14 +3341,217 @@ draw_samped_screen:
     mov r9d, 74
     mov r10d, COL_WHITE
     call draw_text
-    jmp .ds_bot_bar
+    jmp .ds_rec_bar
 
 .ds_hint_norm:
-    mov ecx, 3
+    mov ecx, 2
     mov edx, 44
     lea r8, [seKeyHint]
-    mov r9d, 74
+    mov r9d, 76
     mov r10d, COL_NOTE
+    call draw_text
+
+.ds_rec_bar:
+    ; --- Zeile 47: Aufnahmegeraet-Auswahl & Live-VU-Pegelbalken ---
+    mov ecx, 1
+    mov edx, 47
+    lea r8, [txtMicLbl]
+    mov r9d, 4
+    mov r10d, COL_TEAL
+    call draw_text
+
+    ; [<] Button (Spalten 6..8)
+    mov ecx, 6 * CHAR_W
+    mov edx, 47 * CHAR_H
+    mov r8d, 3 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_HDR_OFF
+    call fill_rect
+    mov ecx, 6
+    mov edx, 47
+    lea r8, [txtDevPrev]
+    mov r9d, 3
+    mov r10d, COL_WHITE
+    call draw_text
+
+    ; Geraetename (Spalten 10..37 = 28 Zeichen)
+    mov ecx, 10 * CHAR_W
+    mov edx, 47 * CHAR_H
+    mov r8d, 28 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_BLACK
+    call fill_rect
+    mov ecx, 10
+    mov edx, 47
+    lea r8, [seRecDevName]
+    mov r9d, 28
+    mov r10d, COL_CYAN
+    cmp dword [seRecDevCount], 0
+    jne .ds_rb_dncol
+    mov r10d, COL_PURPHI
+.ds_rb_dncol:
+    call draw_text
+
+    ; [>] Button (Spalten 39..41)
+    mov ecx, 39 * CHAR_W
+    mov edx, 47 * CHAR_H
+    mov r8d, 3 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_HDR_ON
+    call fill_rect
+    mov ecx, 39
+    mov edx, 47
+    lea r8, [txtDevNext]
+    mov r9d, 3
+    mov r10d, COL_WHITE
+    call draw_text
+
+    ; VU-Label (Spalten 43..45)
+    mov ecx, 43
+    mov edx, 47
+    lea r8, [txtVuLbl]
+    mov r9d, 3
+    mov r10d, COL_TEAL
+    call draw_text
+
+    ; VU-Balken-Hintergrund (Spalten 47..70 = 288 px)
+    mov ecx, 47 * CHAR_W
+    mov edx, 47 * CHAR_H + 1
+    mov r8d, 24 * CHAR_W
+    mov r9d, CHAR_H - 2
+    mov r10d, COL_BLACK
+    call fill_rect
+
+    mov ecx, 47 * CHAR_W
+    mov edx, 47 * CHAR_H + 2
+    mov r8d, 24 * CHAR_W
+    mov r9d, CHAR_H - 4
+    mov r10d, COL_BEAT
+    call fill_rect
+
+    cmp dword [isRecording], 0
+    je .ds_vu_idle
+
+    ; 3-Zonen-Live-VU-Balken (0..192 Cyan, 192..252 Gelb, 252..288 Pink/Clip)
+    mov eax, [recVuLevel]
+    imul eax, 288
+    xor edx, edx
+    mov ecx, 127
+    div ecx
+    cmp eax, 288
+    jbe .ds_vu_w_ok
+    mov eax, 288
+.ds_vu_w_ok:
+    mov r14d, eax
+    test r14d, r14d
+    jz .ds_vu_peak
+
+    ; Zone 1: Cyan (0..192 px)
+    mov r8d, r14d
+    cmp r8d, 192
+    jbe .ds_vu_z1
+    mov r8d, 192
+.ds_vu_z1:
+    mov ecx, 47 * CHAR_W
+    mov edx, 47 * CHAR_H + 2
+    mov r9d, CHAR_H - 4
+    mov r10d, COL_CYAN
+    call fill_rect
+
+    ; Zone 2: Gelb (192..252 px)
+    cmp r14d, 192
+    jbe .ds_vu_peak
+    mov r8d, r14d
+    cmp r8d, 252
+    jbe .ds_vu_z2
+    mov r8d, 252
+.ds_vu_z2:
+    sub r8d, 192
+    mov ecx, 47 * CHAR_W + 192
+    mov edx, 47 * CHAR_H + 2
+    mov r9d, CHAR_H - 4
+    mov r10d, COL_CURSOR
+    call fill_rect
+
+    ; Zone 3: Pink/Clip (252..288 px)
+    cmp r14d, 252
+    jbe .ds_vu_peak
+    mov r8d, r14d
+    sub r8d, 252
+    mov ecx, 47 * CHAR_W + 252
+    mov edx, 47 * CHAR_H + 2
+    mov r9d, CHAR_H - 4
+    mov r10d, COL_PURPHI
+    call fill_rect
+
+.ds_vu_peak:
+    ; Peak-Hold-Markierung
+    mov eax, [recVuPeakHold]
+    cmp eax, 3
+    jb .ds_vu_time
+    imul eax, 286
+    xor edx, edx
+    mov ecx, 127
+    div ecx
+    cmp eax, 286
+    jbe .ds_vu_pk_ok
+    mov eax, 286
+.ds_vu_pk_ok:
+    lea ecx, [rax + 47 * CHAR_W]
+    mov edx, 47 * CHAR_H + 1
+    mov r8d, 2
+    mov r9d, CHAR_H - 2
+    mov r10d, COL_WHITE
+    cmp dword [recVuPeakHold], 122
+    jb .ds_vu_pk_draw
+    mov r10d, COL_PURPHI
+.ds_vu_pk_draw:
+    call fill_rect
+
+.ds_vu_time:
+    ; Aufnahmezeit "X.Y/5.9" (Spalten 72..78)
+    mov eax, [recWritePos]
+    imul rax, 10
+    xor edx, edx
+    mov ecx, 22050
+    div rcx
+    cmp eax, 59
+    jbe .ds_vt_ok
+    mov eax, 59
+.ds_vt_ok:
+    xor edx, edx
+    mov ecx, 10
+    div ecx
+    add al, '0'
+    mov [recTimeTxt + 0], al
+    mov byte [recTimeTxt + 1], '.'
+    add dl, '0'
+    mov [recTimeTxt + 2], dl
+    mov dword [recTimeTxt + 3], '9.5/'
+
+    mov ecx, 72
+    mov edx, 47
+    lea r8, [recTimeTxt]
+    mov r9d, 7
+    mov r10d, COL_CYAN
+    cmp dword [recVuPeakHold], 122
+    jb .ds_vt_draw
+    mov r10d, COL_PURPHI
+.ds_vt_draw:
+    call draw_text
+    jmp .ds_bot_bar
+
+.ds_vu_idle:
+    lea r8, [txtRecReady]
+    mov r10d, COL_TEAL
+    cmp dword [seRecDevCount], 0
+    jne .ds_vi_draw
+    lea r8, [txtRecNoDev]
+    mov r10d, COL_PURPHI
+.ds_vi_draw:
+    mov ecx, 72
+    mov edx, 47
+    mov r9d, 7
     call draw_text
 
 .ds_bot_bar:

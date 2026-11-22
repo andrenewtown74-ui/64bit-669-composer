@@ -30,6 +30,10 @@ BUF_FRAMES      equ 512
 BUF_BYTES       equ BUF_FRAMES * 4
 TICKS_PER_TEMPO equ 1411                ; 44100 Hz / 31,25 Hz Original-669-Timer
 
+; Echtzeit-Aufnahme-Streaming (22050 Hz, 8-Bit Mono, 4 Puffer a 512 Bytes = ~23 ms)
+REC_BUF_COUNT   equ 4
+REC_CHUNK_BYTES equ 512
+
 ; Windows-Konstanten
 WS_TRACKER      equ 0x10CA0000
 WS_POPUP_VIS    equ 0x90000000
@@ -59,7 +63,9 @@ WM_CLOSE        equ 0x0010
 WM_KEYDOWN      equ 0x0100
 WM_SYSKEYDOWN   equ 0x0104
 WM_SYSCHAR      equ 0x0106
+WM_MOUSEMOVE    equ 0x0200
 WM_LBUTTONDOWN  equ 0x0201
+WM_LBUTTONUP    equ 0x0202
 WM_RBUTTONDOWN  equ 0x0204
 WM_MOUSEWHEEL   equ 0x020A
 
@@ -139,6 +145,8 @@ extern SetWindowLongA
 extern SetWindowPos
 extern ScreenToClient
 extern MessageBoxA
+extern SetCapture
+extern ReleaseCapture
 
 ; gdi32.dll
 extern CreateCompatibleDC
@@ -161,6 +169,8 @@ extern waveOutPrepareHeader
 extern waveOutWrite
 extern waveOutReset
 extern waveOutClose
+extern waveInGetNumDevs
+extern waveInGetDevCapsA
 extern waveInOpen
 extern waveInPrepareHeader
 extern waveInUnprepareHeader
@@ -191,6 +201,16 @@ txtNewFile   db "_NEUER_SONG     "
 txtRecName   db "REC 00 22kHz"
 txtMinus     db "[-]"
 txtPlus      db "[+]"
+txtLoopL     db "L"
+txtLoopE     db "E"
+txtMicLbl    db "Mic:"
+txtDevPrev   db "[<]"
+txtDevNext   db "[>]"
+txtVuLbl     db "VU:"
+txtDevStd    db "Standard (Windows)          "
+txtDevNone   db "Kein Aufnahmegeraet         "
+txtRecReady  db "BEREIT "
+txtRecNoDev  db "KEIN IN"
 
 flt669       db "Composer 669 (*.669)", 0, "*.669", 0, "Alle Dateien (*.*)", 0, "*.*", 0, 0
 defExt       db "669", 0
@@ -253,23 +273,27 @@ demoSep     db "   *** 669 x64 ***  "
 
 ; Texte und Layouts fuer den Sample- und Instrument-Editor
 seTopBar    db " SAMPLE-EDITOR  Slot:00              Len:00000  Loop:OFF  [ESC=Tracker]        "
-seInfoBar   db " Sel:00000-00000  Loop:00000-FFFFF   [L=SelStart R=SelEnde Shift+L/R=Loop]     "
-seActBar    db " [WAV Laden] [REC Start] [Vorhoeren] [StopTon] [Loop:ON] [Sel->Lp] [Trim] [Syn]"
+seInfoBar   db " Sel:00000-00000  Loop:00000-FFFFF  [Loop L/E ziehen | L/R=Auswahl]            "
+seActBar    db " [WAV Laden] [REC Start] [Vorhoeren] [StopTon] [Loop:ON] [Sel->Lp] [Trim] [Clr]"
 seFxBar     db " FX: [Normalis] [Fade In] [FadeOut] [Reverse] [Boost +] [HalbLen] [SelAll]     "
-seSynthHdr  db " SYNTHESIZER / INSTRUMENT-DESIGNER (ADSR, Wellenform, Sweep & Filter -> PCM)  "
+seSynthHdr  db " SYNTHESIZER / INSTRUMENT-DESIGNER (Live-Aenderung direkt auf aktiven Slot)   "
 seWaveBar   db "   Welle: [0:Sinus] [1:Saege] [2:Puls ] [3:Dreie] [4:Rausc]                    "
 sePulseTxt  db "Pulsbreite: 50% "
 sePresetBar db "   Presets: [808Kick] [Snare  ] [AcidSaw] [ChipSqr] [SoftPad] [LaserFX]        "
-seRenderBar db "   [ SYNTH -> SLOT RENDERN  ]  [ SYNTH + AUTO-LOOP PAD ]  [ Slot - / Slot + ]  "
+seRenderBar db "   [LIVE-SYNTH:AN ] [AUTO-LOOP:AUS] [-> Slot] [Slot  -] [Slot  +]              "
 seRecBanner db "   *** AUFNAHME LAEUFT (22050 Hz, 8-Bit Mono) - [REC Stop!] zum Beenden ***   "
-seKeyHint   db " QWERTZ-Klaviatur (Y..M / Q..I): Aktiven Slot live spielen | Mausrad: Slot    "
+seKeyHint   db " Slider ziehen = Live-Update | Loop-Striche L/E ziehen | QWERTZ = Live spielen"
 seBotBar    db " Slot:00  Oct:2  [SPACE=Play Song]  [Strg+E / ESC = Zurueck Tracker]       [?] "
-seEmptyMsg  db " Slot nutzt internen Synth / leer - WAV laden, REC oder SYNTH nutzen"
+seEmptyMsg  db " Slot nutzt internen Synth / leer - Regler bewegen, WAV laden oder REC nutzen "
 
 txtRecBtnOn  db "[REC Start]"
 txtRecBtnOff db "[REC Stop!]"
 txtLpBtnOn   db "[Loop:ON]"
 txtLpBtnOff  db "[LoopOFF]"
+txtLiveOn    db "[LIVE-SYNTH:AN ]"
+txtLiveOff   db "[LIVE-SYNTH:AUS]"
+txtAlOn      db "[AUTO-LOOP:AN ]"
+txtAlOff     db "[AUTO-LOOP:AUS]"
 
 ; Startspalte und Breite der 7 Effekt-Buttons in Zeile 24
 seFxBtnPos:
@@ -290,6 +314,7 @@ seParamNames:
     db "Sweep     "
     db "Detune/Cho"
     db "Filter LP "
+    db "Lautstaerk"
 
 seParamHints:
     db "Einschwing "
@@ -300,6 +325,7 @@ seParamHints:
     db "<50Dn >50Up"
     db "2.Oszillat."
     db "Tiefpass   "
+    db "Pegel 0-100"
 
 seWaveSlotNames:
     db "SYN Sinus   "
@@ -528,9 +554,15 @@ origNop       resd 1
 saveNos       resd 1
 saveNop       resd 1
 
-; Sample-Editor & ADSR-Synth-Zustand
+; Sample-Editor, Aufnahme-VU, Geraeteauswahl & ADSR-Synth-Zustand
 isRecording   resd 1
 recStartTick  resd 1
+seRecDevId    resd 1            ; -1 = Windows-Standard (WAVE_MAPPER), 0..N-1 = Geraete-ID
+seRecDevCount resd 1            ; Anzahl erkannter waveIn-Geraete
+recWritePos   resd 1            ; Aktuell aufgenommene Bytes in recBuf
+recVuLevel    resd 1            ; Geglaetteter Live-VU-Pegel (0..127)
+recVuPeakHold resd 1            ; Peak-Hold-Anzeige (0..127)
+recVuHoldCnt  resd 1            ; Haltezaehler fuer Peak-Hold
 seLastSlot    resd 1
 seLastLen     resd 1
 seSelStart    resd 1
@@ -538,7 +570,11 @@ seSelEnd      resd 1
 seWave        resd 1
 sePulse       resd 1
 seSynthLfsr   resd 1
-seParams      resd 8            ; Attack, Decay, Sustain, Release, Dauer, Sweep, Detune, Filter
+seLiveSynth   resd 1            ; 1 = jede Aenderung rendert sofort in den aktiven Slot
+seAutoLoop    resd 1            ; 1 = Synth setzt automatisch Sustain-Loop
+seDragMode    resd 1            ; 0=aus, 1=LoopStart, 2=LoopEnd, 3=Slider
+seDragParam   resd 1            ; Aktiver Slider-Index 0..8 beim Ziehen
+seParams      resd 9            ; Attack, Decay, Sustain, Release, Dauer, Sweep, Detune, Filter, Lautstaerke
 
 ; Zwischenablage-Status fuer Spur und Pattern
 clipChValid   resd 1
@@ -622,11 +658,15 @@ clipPatBuf     resb PAT_BYTES
 patterns       resb MAX_PATS * PAT_BYTES
 lineBuf        resb 32
 cellBuf        resb 16
+seRecDevName   resb 32
+recTimeTxt     resb 8
+recDevCaps     resb 48
 
 alignb 16
 waveHdrs       resb BUF_COUNT * 48
 audioBufs      resb BUF_COUNT * BUF_BYTES
-recHdr         resb 48
+recHdrs        resb REC_BUF_COUNT * 48
+recChunks      resb REC_BUF_COUNT * REC_CHUNK_BYTES
 recBuf         resb MAX_SAMP_BYTES
 demoFb         resd DEMO_W * DEMO_H
 tunnelDist     resb DEMO_W * DEMO_H
