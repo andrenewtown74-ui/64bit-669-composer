@@ -1,10 +1,10 @@
 # Composer 669 x64 Tracker
+
 <img width="2560" height="1440" alt="image" src="https://github.com/user-attachments/assets/ab20df2d-d789-4c80-b397-25482f963c01" />
 <img width="2560" height="1440" alt="image" src="https://github.com/user-attachments/assets/44989124-208e-4850-b9af-f4b50869c056" />
 <img width="2560" height="1440" alt="image" src="https://github.com/user-attachments/assets/863c5d4b-521c-4505-8cc4-2c3e8ce4d82d" />
 
-
-Ein nativer 64-Bit-Windows-Musiktracker im Stil des klassischen DOS-Trackers **Composer 669**, vollständig in reinem x64-Assembler (NASM) ohne C-Runtime (CRT) und ohne externe Bibliotheken entwickelt. Die Anwendung nutzt ausschließlich direkte Windows-API-Aufrufe (`kernel32`, `user32`, `gdi32`, `winmm`, `comdlg32`) und kombiniert einen vollständigen 8-Kanal-Tracker mit einem Sample-/Instrument-Editor (inklusive Mikrofonaufnahme und ADSR-Synthesizer) sowie einem integrierten 4K-Demoscene-Visualizer.
+Ein nativer 64-Bit-Windows-Musiktracker im Stil des klassischen DOS-Trackers **Composer 669**, vollständig in reinem x64-Assembler (NASM) ohne C-Runtime (CRT) und ohne externe Bibliotheken entwickelt. Die Anwendung nutzt ausschließlich direkte Windows-API-Aufrufe (`kernel32`, `user32`, `gdi32`, `winmm`, `comdlg32`) und kombiniert einen vollständigen 8-Kanal-Tracker mit einem interaktiven Sample-/Instrument-Editor (Live-ADSR-Synthesizer, zerstörungsfreie Sample-FX, Mikrofonaufnahme mit Live-VU) sowie einem integrierten 4K-Demoscene-Visualizer.
 
 ---
 
@@ -19,14 +19,19 @@ Ein nativer 64-Bit-Windows-Musiktracker im Stil des klassischen DOS-Trackers **C
 
 ### Sample- & Instrument-Editor (`c669_samped.inc`)
 * **Direktzugriff:** Umschaltbar über **`[I]`** in der Fußzeile oder **`Strg + E`** (funktioniert 1:1 auch im Vollbildmodus).
-* **Interaktive Wellenform-Ansicht:** Hochauflösende Min/Max-Darstellung des aktiven Slots (`00..3F`) mit Auswahl-Markern (`Linksklick` = Start, `Rechtsklick` = Ende), visueller Loop-Anzeige (`Shift + Links/Rechts` setzt `LoopStart`/`LoopEnd`) und Live-Vorhören über die QWERTZ-Klaviatur.
-* **Mikrofon- / Line-In-Aufnahme:** Direkte Aufnahme über WinMM `waveIn` (22.050 Hz, 8-Bit Mono, bis zu 128 KB / ca. 5,9 Sekunden) direkt in den aktiven Sample-Slot inklusive automatischer Puffer-Überwachung.
-* **Schnitt- & Sample-Effekte:** Zuschneiden (`Trim`), Auswahl als Loop übernehmen (`Sel->Lp`), Loop ein/aus sowie destruktive Puffer-Effekte für den markierten Bereich: **Normalisieren**, **Fade In**, **Fade Out**, **Reverse**, **Boost (+50 %)** und **HalbLen** (2:1-Dezimierung / Lo-Fi).
-* **Integrierter ADSR-Synthesizer / Instrument-Designer:**
-  * **5 Wellenformen:** Sinus, Sägezahn, Puls (mit einstellbarer Pulsbreite 10–90 %), Dreieck und Rauschen.
-  * **8 Parameter-Slider (0–100):** Attack, Decay, Sustain, Release, Dauer (0,1–2,0 s), Pitch-Sweep (abwärts/aufwärts), Detune/Chorus (2. Oszillator) und Tiefpassfilter (LP).
-  * **6 Presets:** `808Kick`, `Snare`, `AcidSaw`, `ChipSqr`, `SoftPad`, `LaserFX`.
-  * **PCM-Export in den Slot:** Rendert das gestaltete Instrument als One-Shot (`SYNTH -> SLOT RENDERN`) oder mit automatischem Sustain-Loop (`SYNTH + AUTO-LOOP PAD`) direkt als 8-Bit-PCM in den gewählten Slot – sofort im Tracker spielbar, nachbearbeitbar und beim `.669`-Speichern vollständig eingebettet.
+* **Interaktive Wellenform & verschiebbare Loop-Marker:**
+  * Min/Max-Darstellung des aktiven Slots (`00..3F`) mit Auswahl-Markern (`Linksklick` = Start, `Rechtsklick` = Ende) und Live-Vorhören über die QWERTZ-Klaviatur.
+  * Bei aktivem Loop erscheinen greifbare Marker an beiden Loop-Linien (**`L`** oben = Loop-Start, **`E`** unten = Loop-Ende), die sich direkt mit gedrückter linker Maustaste flüssig verschieben lassen und bei Slider-Änderungen erhalten bleiben.
+* **Mikrofon- / Line-In-Aufnahme mit Geräteauswahl & Live-VU:**
+  * Streaming-Aufnahme über WinMM `waveIn` (22.050 Hz, 8-Bit Mono, 4×512-Byte-Puffer, bis zu 128 KB / ca. 5,9 Sekunden) direkt in den aktiven Slot.
+  * Direkte **Geräteauswahl** in der Aufnahmeleiste (`Standard (Windows)` sowie alle erkannten Mikrofone und Line-In-Eingänge).
+  * **Live-VU-Pegelbalken** in 3 Farbzonen (Cyan = normal, Gelb = laut, Pink = Clip) mit Peak-Hold-Linie, laufender Zeitanzeige (`0.0/5.9` s) und live mitwachsender Wellenform.
+* **Schnitt- & Puffer-Effekte:** Zuschneiden (`Trim`), Auswahl als Loop übernehmen (`Sel->Lp`), Loop ein/aus (`Loop:ON`/`LoopOFF`), Zurücksetzen auf internen Synth/leer (`Syn`) sowie destruktive Effekte für den markierten Bereich: **Normalisieren**, **Fade In**, **Fade Out**, **Reverse**, **Boost (+50 %)** und **HalbLen** (2:1-Dezimierung / Lo-Fi).
+* **Zwei Live-Modi & getrennte Speicherung pro Slot (`00..3F`):**
+  * Jeder der 64 Slots speichert seinen eigenen Modus (`MOD:SYNTH` oder `MOD:SAMPLE`), Wellenform, Pulsbreite, Auto-Loop und alle **9 Parameter-Slider (0–100)**: **Attack**, **Decay**, **Sustain**, **Release**, **Dauer/Gate**, **Sweep**, **Detune/Chorus**, **Filter LP** und **Lautstärke**.
+  * **Live-Update (`[LIVE:AN ]`):** Jedes Ziehen an einem Slider aktualisiert die Wellenform sofort in Echtzeit und spielt beim Loslassen automatisch eine Vorschau an.
+  * **`[MOD:SYNTH ]` (ADSR-Synthesizer):** 5 Wellenformen (Sinus, Sägezahn, Puls mit einstellbarer Pulsbreite 10–90 %, Dreieck, Rauschen), optionaler Sustain-Auto-Loop (`[AUTOLP:AN ]`) und 6 Presets (`808Kick`, `Snare`, `AcidSaw`, `ChipSqr`, `SoftPad`, `LaserFX`).
+  * **`[MOD:SAMPLE]` (Zerstörungsfreie Sample-FX):** Geladene `.669`-Samples, WAV-Dateien und Aufnahmen werden automatisch in einem Original-Backup gesichert. Alle 9 Slider lassen sich verlustfrei live auf das Sample anwenden (ADSR-Hüllkurve, Gate/Länge, Pitch-Sweep, Chorus, Tiefpassfilter, Lautstärke); über **`[Orig ]`** wird jederzeit das unbearbeitete Original wiederhergestellt.
 
 ### Oberfläche, Editor & Steuerung
 * **80×50-Zeichenraster (960×600 nativ):** Klassische Composer-669-Farbpalette mit Live-VU-Metern, scrollender 64-Sample-Liste, 128-Order-Anzeige, 64-Zeilen-Pattern-Editor und markierter Break-Zeile.
@@ -46,12 +51,12 @@ Ein nativer 64-Bit-Windows-Musiktracker im Stil des klassischen DOS-Trackers **C
 
 | Datei | Beschreibung |
 |---|---|
-| `c669main.asm` | Haupteinstiegspunkt, Fenstererstellung, Borderless-Fullscreen-Logik, `WndProc` und Hauptschleife |
-| `c669_defs.inc` | Konstanten, Windows-API-Importe (inkl. `waveIn`), `.data`-Tabellen, Hilfetexte und `.bss`-Speicherlayout |
+| `c669main.asm` | Haupteinstiegspunkt, Fenstererstellung, Borderless-Fullscreen-Logik, `WndProc` (inkl. Maus-Drag) und Hauptschleife |
+| `c669_defs.inc` | Konstanten, Windows-API-Importe (inkl. `waveIn`), `.data`-Tabellen, Hilfetexte und `.bss`-Speicherlayout (inkl. 64-Slot-Speicher & Original-Sample-Puffer) |
 | `c669_audio.inc` | 8-Kanal-Stereo-Mixer (Synth + 64-Slot-PCM), alle 669-Effekte (`a`–`f`) und WinMM-Pufferverwaltung |
-| `c669_io.inc` | `.669`-Parser/Exporter, WAV-Importer, Slot-Verwaltung und Löschroutinen mit Sicherheitsabfrage |
+| `c669_io.inc` | `.669`-Parser/Exporter, WAV-Importer, Slot-Original-Backup und Löschroutinen mit Sicherheitsabfrage |
 | `c669_ui.inc` | GDI-Renderer, Scroll-Logik, Tastatur-, Maus-, Copy/Paste-, Moduswechsel- und Hilfe-Overlay-Steuerung |
-| `c669_samped.inc` | Sample- & Instrument-Editor (Wellenform, `waveIn`-Aufnahme, Trim/Loops, Effekte und ADSR-Synthesizer) |
+| `c669_samped.inc` | Sample- & Instrument-Editor (Wellenform, ziehbare Loop-Marker, `waveIn`-Streaming mit Gerätewahl & Live-VU, destruktive FX, zerstörungsfreie Sample-FX und Live-ADSR-Synth pro Slot) |
 | `c669_demo.inc` | 320×200-Framebuffer-Visualizer (Plasma, 3D-Tunnel, Rasterbars, Oszilloskop, Equalizer, Scroller) |
 
 ---
@@ -67,6 +72,3 @@ Ein nativer 64-Bit-Windows-Musiktracker im Stil des klassischen DOS-Trackers **C
 .\nasm.exe -f win64 c669main.asm -o c669main.obj
 .\GoLink.exe /entry start /fo c669main.exe c669main.obj kernel32.dll user32.dll gdi32.dll winmm.dll comdlg32.dll
 .\c669main.exe
-Ein nativer 64-Bit-Windows-Musiktracker im Stil des klassischen DOS-Trackers **Composer 669**, vollständig in reinem x64-Assembler (NASM) ohne C-Runtime (CRT) und ohne externe Bibliotheken entwickelt. Die Anwendung nutzt ausschließlich direkte Windows-API-Aufrufe (`kernel32`, `user32`, `gdi32`, `winmm`, `comdlg32`) und kombiniert einen vollständigen 8-Kanal-Tracker mit einem integrierten 4K-Demoscene-Visualizer.
-
----
