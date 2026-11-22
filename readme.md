@@ -1,5 +1,8 @@
 # Composer 669 x64 Tracker
-<img width="1446" height="945" alt="image" src="https://github.com/user-attachments/assets/4c7cf9b3-7026-4590-9aac-ac0dfdd6c04d" />
+<img width="2560" height="1440" alt="image" src="https://github.com/user-attachments/assets/ab20df2d-d789-4c80-b397-25482f963c01" />
+<img width="2560" height="1440" alt="image" src="https://github.com/user-attachments/assets/44989124-208e-4850-b9af-f4b50869c056" />
+<img width="2560" height="1440" alt="image" src="https://github.com/user-attachments/assets/863c5d4b-521c-4505-8cc4-2c3e8ce4d82d" />
+
 
 Ein nativer 64-Bit-Windows-Musiktracker im Stil des klassischen DOS-Trackers **Composer 669**, vollständig in reinem x64-Assembler (NASM) ohne C-Runtime (CRT) und ohne externe Bibliotheken entwickelt. Die Anwendung nutzt ausschließlich direkte Windows-API-Aufrufe (`kernel32`, `user32`, `gdi32`, `winmm`, `comdlg32`) und kombiniert einen vollständigen 8-Kanal-Tracker mit einem Sample-/Instrument-Editor (inklusive Mikrofonaufnahme und ADSR-Synthesizer) sowie einem integrierten 4K-Demoscene-Visualizer.
 
