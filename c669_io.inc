@@ -134,6 +134,8 @@ init_samp_meta:
     mov dword [rdx + rbx*4], 0xFFFFF
 
 .ism_next:
+    mov ecx, ebx
+    call samped_reset_slot_synth
     inc ebx
     cmp ebx, MAX_SAMPS
     jb .ism_loop
@@ -586,6 +588,10 @@ parse_wav_buffer:
     mov r8d, 12
     call copy_basename
 
+    ; Original-Backup sichern und Slot in den SAMPLE-Modus schalten
+    mov ecx, ebx
+    call samped_commit_orig_slot
+
     mov eax, 1
     jmp .w_ret
 
@@ -776,6 +782,8 @@ unload_wav_slot:
     rep movsb
 
 .uw_st:
+    mov ecx, ebx
+    call samped_reset_slot_synth
     lea rcx, [stSynth]
     call set_status
 
@@ -1387,6 +1395,8 @@ parse_669_buffer:
     mov dword [rdx + rbx*4], 0
     lea rdx, [sampLoopEndTbl]
     mov dword [rdx + rbx*4], 0xFFFFF
+    mov ecx, ebx
+    call samped_reset_slot_synth
     inc ebx
     cmp ebx, MAX_SAMPS
     jb .sm_clr
@@ -1578,10 +1588,19 @@ parse_669_buffer:
     lea rax, [sampLoopEndTbl]
     mov r8d, [rax + rbx*4]
     cmp r8d, 0xFFFFF
-    jae .pcm_rd_adv
+    jae .pcm_rd_orig
     cmp r8d, edx
-    jbe .pcm_rd_adv
+    jbe .pcm_rd_orig
     mov [rax + rbx*4], edx
+
+.pcm_rd_orig:
+    ; Original-Sample sichern und Slot fuer verlustfreie Slider-FX auf SAMPLE stellen
+    push rcx
+    sub rsp, 0x28
+    mov ecx, ebx
+    call samped_commit_orig_slot
+    add rsp, 0x28
+    pop rcx
 
 .pcm_rd_adv:
     add r15d, ecx

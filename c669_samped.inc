@@ -1,4 +1,4 @@
-; Sample- und Instrument-Editor (Wellenform, verschiebbare Loop-Striche, waveIn-Aufnahme mit Live-VU & Geraeteauswahl, Effekte, Live-ADSR-Synth)
+; Sample- und Instrument-Editor (Wellenform, Loop-Drag, waveIn-Aufnahme mit Live-VU & Geraetewahl, Sample-FX & Live-ADSR-Synth pro Slot)
 
 ; Wert EAX (0..999) als 3 rechtsbuendige Dezimalzeichen nach [R8] schreiben
 fmt_dec3:
@@ -28,27 +28,182 @@ fmt_dec3:
     mov [r8 + 2], dl
     ret
 
-; Standardwerte fuer ADSR-Synthesizer und Aufnahmegerat beim Programmstart setzen
+; ============================================================================
+; Pro-Slot-Speicherverwaltung (64 Slots: Modus, Welle, Puls, AutoLoop, 9 Slider, Original-Backup)
+; ============================================================================
+
+; Slot ECX (0..63) auf Standard-Synth-Parameter zuruecksetzen
+samped_reset_slot_synth:
+    push rdi
+    and ecx, MAX_SAMPS - 1
+
+    lea rdx, [slotMode]
+    mov byte [rdx + rcx], 0
+    lea rdx, [slotWave]
+    mov byte [rdx + rcx], 1
+    lea rdx, [slotPulse]
+    mov byte [rdx + rcx], 50
+    lea rdx, [slotAutoLoop]
+    mov byte [rdx + rcx], 0
+    lea rdx, [slotOrigLen]
+    mov dword [rdx + rcx*4], 0
+
+    imul eax, ecx, 36
+    lea rdi, [slotParams]
+    add rdi, rax
+    mov dword [rdi + 0*4], 4            ; Attack
+    mov dword [rdi + 1*4], 32           ; Decay
+    mov dword [rdi + 2*4], 60           ; Sustain
+    mov dword [rdi + 3*4], 24           ; Release
+    mov dword [rdi + 4*4], 35           ; Dauer
+    mov dword [rdi + 5*4], 50           ; Sweep
+    mov dword [rdi + 6*4], 18           ; Detune/Chorus
+    mov dword [rdi + 7*4], 80           ; Filter LP
+    mov dword [rdi + 8*4], 90           ; Lautstaerke
+
+    cmp ecx, [seCurSlot]
+    jne .srs_done
+    mov dword [seCurSlot], -1
+.srs_done:
+    pop rdi
+    ret
+
+; Aktuelles pcmSlots[ECX] als unbearbeitetes Original nach pcmOrigSlots[ECX] sichern (MOD:SAMPLE, neutrale Slider)
+samped_commit_orig_slot:
+    push rbx
+    push rsi
+    push rdi
+
+    mov ebx, ecx
+    and ebx, MAX_SAMPS - 1
+
+    lea rdx, [sampLenTbl]
+    mov ecx, [rdx + rbx*4]
+    cmp ecx, MAX_SAMP_BYTES
+    jbe .sco_len_ok
+    mov ecx, MAX_SAMP_BYTES
+.sco_len_ok:
+    lea rdx, [slotOrigLen]
+    mov [rdx + rbx*4], ecx
+
+    test ecx, ecx
+    jz .sco_params
+
+    mov eax, ebx
+    shl eax, 17
+    lea rsi, [pcmSlots]
+    add rsi, rax
+    lea rdi, [pcmOrigSlots]
+    add rdi, rax
+    rep movsb
+
+.sco_params:
+    lea rdx, [slotMode]
+    mov byte [rdx + rbx], 1             ; SAMPLE-FX-Modus
+    lea rdx, [slotAutoLoop]
+    mov byte [rdx + rbx], 0
+
+    imul eax, ebx, 36
+    lea rdi, [slotParams]
+    add rdi, rax
+    mov dword [rdi + 0*4], 0            ; Attack neutral
+    mov dword [rdi + 1*4], 0            ; Decay neutral
+    mov dword [rdi + 2*4], 100          ; Sustain neutral
+    mov dword [rdi + 3*4], 0            ; Release neutral
+    mov dword [rdi + 4*4], 100          ; Dauer 100%
+    mov dword [rdi + 5*4], 50           ; Sweep neutral
+    mov dword [rdi + 6*4], 0            ; Chorus aus
+    mov dword [rdi + 7*4], 100          ; Filter offen
+    mov dword [rdi + 8*4], 100          ; Lautstaerke 100%
+
+    mov dword [seCurSlot], -1
+    mov dword [seLastSlot], -1
+
+    pop rdi
+    pop rsi
+    pop rbx
+    ret
+
+; Gespeicherte Einstellungen des aktiven Slots (curInst) in die UI-Variablen laden
+samped_load_cur_slot:
+    push rsi
+    push rdi
+
+    mov eax, [curInst]
+    and eax, MAX_SAMPS - 1
+    cmp eax, [seCurSlot]
+    je .slc_done
+    mov [seCurSlot], eax
+
+    lea rdx, [slotMode]
+    movzx ecx, byte [rdx + rax]
+    mov [seMode], ecx
+    lea rdx, [slotWave]
+    movzx ecx, byte [rdx + rax]
+    mov [seWave], ecx
+    lea rdx, [slotPulse]
+    movzx ecx, byte [rdx + rax]
+    mov [sePulse], ecx
+    lea rdx, [slotAutoLoop]
+    movzx ecx, byte [rdx + rax]
+    mov [seAutoLoop], ecx
+
+    imul eax, 36
+    lea rsi, [slotParams]
+    add rsi, rax
+    lea rdi, [seParams]
+    mov ecx, 9
+    rep movsd
+
+.slc_done:
+    pop rdi
+    pop rsi
+    ret
+
+; Aktuelle UI-Variablen im Speicher des aktiven Slots (curInst) ablegen
+samped_save_cur_slot:
+    push rsi
+    push rdi
+
+    mov eax, [curInst]
+    and eax, MAX_SAMPS - 1
+    mov [seCurSlot], eax
+
+    mov cl, [seMode]
+    lea rdx, [slotMode]
+    mov [rdx + rax], cl
+    mov cl, [seWave]
+    lea rdx, [slotWave]
+    mov [rdx + rax], cl
+    mov cl, [sePulse]
+    lea rdx, [slotPulse]
+    mov [rdx + rax], cl
+    mov cl, [seAutoLoop]
+    lea rdx, [slotAutoLoop]
+    mov [rdx + rax], cl
+
+    imul eax, 36
+    lea rdi, [slotParams]
+    add rdi, rax
+    lea rsi, [seParams]
+    mov ecx, 9
+    rep movsd
+
+    pop rdi
+    pop rsi
+    ret
+
+; Standardwerte beim Programmstart setzen und Aufnahmegeraet einlesen
 init_samped_defaults:
     sub rsp, 0x28
+    mov dword [seCurSlot], -1
     mov dword [seLastSlot], -1
     mov dword [seLastLen], -1
-    mov dword [seRecDevId], -1          ; Standard-Aufnahmegeraet (WAVE_MAPPER)
-    mov dword [seLiveSynth], 1          ; Live-Aenderung standardmaessig aktiv
-    mov dword [seAutoLoop], 0
+    mov dword [seRecDevId], -1
+    mov dword [seLiveSynth], 1
     mov dword [seDragMode], 0
     mov dword [seDragParam], 0
-    mov dword [seWave], 1               ; Saegezahn
-    mov dword [sePulse], 50             ; 50% Pulsbreite
-    mov dword [seParams + 0*4], 4       ; Attack
-    mov dword [seParams + 1*4], 32      ; Decay
-    mov dword [seParams + 2*4], 60      ; Sustain
-    mov dword [seParams + 3*4], 24      ; Release
-    mov dword [seParams + 4*4], 35      ; Dauer (~0,7 s)
-    mov dword [seParams + 5*4], 50      ; Sweep (50 = neutral)
-    mov dword [seParams + 6*4], 18      ; Detune / Chorus
-    mov dword [seParams + 7*4], 80      ; Tiefpass-Filter
-    mov dword [seParams + 8*4], 90      ; Lautstaerke (90%)
+    call samped_load_cur_slot
     call samped_refresh_rec_dev
     add rsp, 0x28
     ret
@@ -101,7 +256,6 @@ samped_refresh_rec_dev:
     test eax, eax
     jnz .srd_std
 
-    ; szPname liegt bei WAVEINCAPSA + 8 (max. 32 Bytes, nullterminiert)
     lea rsi, [recDevCaps + 8]
     lea rdi, [seRecDevName]
     xor ecx, ecx
@@ -207,8 +361,10 @@ se_lparam_to_px:
 .slp_ok:
     ret
 
-; Auswahlmarker bei Slot- oder Laengenaenderung automatisch auf 0..len setzen
+; Slot-Parameter synchronisieren und Auswahlmarker auf 0..len ausrichten
 samped_sync_sel:
+    call samped_load_cur_slot
+
     mov eax, [curInst]
     and eax, MAX_SAMPS - 1
     lea rdx, [sampLenTbl]
@@ -239,7 +395,7 @@ samped_sync_sel:
 .sss_done:
     ret
 
-; Aktiven Sample-Slot einmal auf Note AL (z. B. 12 = C-3) vorhoeren
+; Aktiven Sample-Slot einmal auf Note AL vorhoeren
 samped_preview:
     sub rsp, 0x28
     mov [previewCell + 0], al
@@ -267,12 +423,12 @@ rec_consume_chunk:
     push rsi
     push rdi
 
-    mov ebx, [rcx + 12]                 ; dwBytesRecorded
+    mov ebx, [rcx + 12]
     test ebx, ebx
     jz .rc_done
 
-    mov rsi, [rcx + 0]                  ; lpData
-    xor r8d, r8d                        ; chunkPeak (0..127)
+    mov rsi, [rcx + 0]
+    xor r8d, r8d
     xor r9d, r9d
 .rc_pk:
     movzx eax, byte [rsi + r9]
@@ -288,7 +444,6 @@ rec_consume_chunk:
     cmp r9d, ebx
     jb .rc_pk
 
-    ; Geglaettetes VU (schneller Anstieg, weicher Abfall)
     mov eax, [recVuLevel]
     imul eax, 3
     shr eax, 2
@@ -298,7 +453,6 @@ rec_consume_chunk:
 .rc_vu_st:
     mov [recVuLevel], eax
 
-    ; Peak-Hold aktualisieren (~0,5 s Haltezeit)
     cmp r8d, [recVuPeakHold]
     jb .rc_ph_dec
     mov [recVuPeakHold], r8d
@@ -365,7 +519,7 @@ start_recording:
     mov dword [recVuHoldCnt], 0
 
     lea rcx, [hWaveIn]
-    mov edx, [seRecDevId]               ; -1 = WAVE_MAPPER oder ausgewaehlte Geraete-ID
+    mov edx, [seRecDevId]
     lea r8, [wfxRec]
     xor r9d, r9d
     mov qword [rsp + 0x20], 0
@@ -475,7 +629,6 @@ stop_recording:
     mov rcx, [hWaveIn]
     call waveInReset
 
-    ; Restliche Teilpuffer einsammeln und alle Header freigeben
     xor ebx, ebx
 .st_unp_loop:
     imul eax, ebx, 48
@@ -540,11 +693,13 @@ stop_recording:
     mov al, r10b
     call fmt_hex2
 
-    mov dword [seLastSlot], -1
+    mov ecx, r10d
+    call samped_commit_orig_slot
     call samped_sync_sel
     lea rcx, [stRecOk]
     call set_status
-    mov al, 12
+    mov eax, [curOct]
+    imul eax, 12
     call samped_preview
     mov dword [dirty], 1
     jmp .st_done
@@ -606,7 +761,7 @@ poll_recording:
     ret
 
 ; ============================================================================
-; Sample-Effekte und Schnittfunktionen auf aktiven Slot / Auswahlbereich
+; Destruktive Sample-Effekte und Schnittfunktionen auf aktiven Slot / Auswahl
 ; ============================================================================
 
 ; Aktiven Bereich ermitteln: RAX = Slot-Ptr (oder 0), ECX = Start, EDX = Anzahl
@@ -700,6 +855,9 @@ se_fx_normalize:
     jb .fn_apply
 
 .fn_ok:
+    mov ecx, [curInst]
+    call samped_commit_orig_slot
+    call samped_sync_sel
     lea rcx, [stFxNorm]
     call set_status
     mov dword [dirty], 1
@@ -739,6 +897,9 @@ se_fx_fade_in:
     cmp ebx, r12d
     jb .fi_loop
 
+    mov ecx, [curInst]
+    call samped_commit_orig_slot
+    call samped_sync_sel
     lea rcx, [stFxFi]
     call set_status
     mov dword [dirty], 1
@@ -781,6 +942,9 @@ se_fx_fade_out:
     cmp ebx, r12d
     jb .fo_loop
 
+    mov ecx, [curInst]
+    call samped_commit_orig_slot
+    call samped_sync_sel
     lea rcx, [stFxFo]
     call set_status
     mov dword [dirty], 1
@@ -817,6 +981,9 @@ se_fx_reverse:
     jmp .fr_loop
 
 .fr_ok:
+    mov ecx, [curInst]
+    call samped_commit_orig_slot
+    call samped_sync_sel
     lea rcx, [stFxRev]
     call set_status
     mov dword [dirty], 1
@@ -856,6 +1023,9 @@ se_fx_boost:
     cmp ecx, edx
     jb .fb_loop
 
+    mov ecx, [curInst]
+    call samped_commit_orig_slot
+    call samped_sync_sel
     lea rcx, [stFxBst]
     call set_status
     mov dword [dirty], 1
@@ -906,7 +1076,8 @@ se_fx_halve:
     jae .fh_fin
     shr dword [rdx + rbx*4], 1
 .fh_fin:
-    mov dword [seLastSlot], -1
+    mov ecx, ebx
+    call samped_commit_orig_slot
     call samped_sync_sel
     lea rcx, [stFxHlf]
     call set_status
@@ -952,7 +1123,8 @@ se_fx_trim:
     jae .ft_fin
     mov [rdx + rax*4], ebx
 .ft_fin:
-    mov dword [seLastSlot], -1
+    mov ecx, eax
+    call samped_commit_orig_slot
     call samped_sync_sel
     lea rcx, [stFxTrm]
     call set_status
@@ -966,7 +1138,433 @@ se_fx_trim:
     ret
 
 ; ============================================================================
-; ADSR-Synthesizer-Generator -> rendert 8-Bit-PCM in curInst
+; Zerstoerungsfreier Sample-FX-Prozessor (MOD:SAMPLE): pcmOrigSlots -> pcmSlots
+; Eingabe: ECX = loopMode (ignoriert, bestehende Loops bleiben), EDX = doPreview (0/1)
+; ============================================================================
+sample_fx_render_to_slot:
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 0x78
+
+    mov [rsp + 0x20], ecx
+    mov [rsp + 0x24], edx
+
+    mov eax, [curInst]
+    and eax, MAX_SAMPS - 1
+    mov [rsp + 0x64], eax
+    mov ebx, eax
+
+    lea rdx, [slotOrigLen]
+    mov r14d, [rdx + rbx*4]
+    test r14d, r14d
+    jnz .sfx_has_orig
+
+    ; Falls noch kein Original-Backup existiert, aktuelles PCM als Basis uebernehmen
+    lea rdx, [sampHasPcm]
+    cmp byte [rdx + rbx], 0
+    je .sfx_done
+    lea rdx, [sampLenTbl]
+    mov r14d, [rdx + rbx*4]
+    test r14d, r14d
+    jz .sfx_done
+    cmp r14d, MAX_SAMP_BYTES
+    jbe .sfx_fb_cp
+    mov r14d, MAX_SAMP_BYTES
+.sfx_fb_cp:
+    lea rdx, [slotOrigLen]
+    mov [rdx + rbx*4], r14d
+    mov eax, ebx
+    shl eax, 17
+    lea rsi, [pcmSlots]
+    add rsi, rax
+    lea rdi, [pcmOrigSlots]
+    add rdi, rax
+    mov ecx, r14d
+    rep movsb
+
+.sfx_has_orig:
+    mov [rsp + 0x48], r14d              ; origLen
+
+    ; Ausgabelaenge ueber Dauer-Slider (5..100% der Originallaenge)
+    mov eax, r14d
+    imul rax, [seParams + 4*4]
+    xor edx, edx
+    mov ecx, 100
+    div rcx
+    cmp eax, 32
+    jae .sfx_olen_cap
+    mov eax, r14d
+    cmp eax, 32
+    jbe .sfx_olen_cap
+    mov eax, 32
+.sfx_olen_cap:
+    cmp eax, MAX_SAMP_BYTES
+    jbe .sfx_olen_ok
+    mov eax, MAX_SAMP_BYTES
+.sfx_olen_ok:
+    mov r12d, eax                       ; r12d = outLen
+
+    ; ADSR-Phasenlaengen (bei 0/0/100/0 komplett neutral)
+    mov eax, r12d
+    imul eax, [seParams + 0*4]
+    xor edx, edx
+    mov ecx, 250
+    div ecx
+    mov [rsp + 0x28], eax               ; nA
+
+    mov eax, r12d
+    imul eax, [seParams + 1*4]
+    xor edx, edx
+    mov ecx, 250
+    div ecx
+    mov [rsp + 0x2C], eax               ; nD
+
+    mov eax, r12d
+    imul eax, [seParams + 3*4]
+    xor edx, edx
+    mov ecx, 250
+    div ecx
+    mov [rsp + 0x34], eax               ; nR
+
+    mov eax, [rsp + 0x28]
+    add eax, [rsp + 0x2C]
+    add eax, [rsp + 0x34]
+    cmp eax, r12d
+    jbe .sfx_ns_calc
+    mov ecx, r12d
+    sub ecx, [rsp + 0x28]
+    sub ecx, [rsp + 0x2C]
+    jns .sfx_nr_fix
+    xor ecx, ecx
+.sfx_nr_fix:
+    mov [rsp + 0x34], ecx
+.sfx_ns_calc:
+    mov eax, r12d
+    sub eax, [rsp + 0x28]
+    sub eax, [rsp + 0x2C]
+    sub eax, [rsp + 0x34]
+    jns .sfx_ns_ok
+    xor eax, eax
+.sfx_ns_ok:
+    add eax, [rsp + 0x28]
+    add eax, [rsp + 0x2C]
+    mov [rsp + 0x30], eax               ; rStart = nA + nD + nS
+
+    ; Sustain-Pegel 0..32768 (32768 bei 100% = verlustfreie Skalierung)
+    mov eax, [seParams + 2*4]
+    shl eax, 15
+    xor edx, edx
+    mov ecx, 100
+    div ecx
+    mov [rsp + 0x38], eax               ; sustLvl
+
+    ; Tiefpass-Alpha (0..256, 256 bei 100% = transparent)
+    mov eax, [seParams + 7*4]
+    cmp eax, 5
+    jae .sfx_lp_ok
+    mov eax, 5
+.sfx_lp_ok:
+    shl eax, 8
+    xor edx, edx
+    mov ecx, 100
+    div ecx
+    mov [rsp + 0x40], eax               ; lpAlpha
+
+    ; Lautstaerke-Faktor (0..256, 256 bei 100% = Originalpegel)
+    mov eax, [seParams + 8*4]
+    shl eax, 8
+    xor edx, edx
+    mov ecx, 100
+    div ecx
+    mov [rsp + 0x44], eax               ; volScale
+
+    ; Pitch-Sweep-Delta (-49000..+49000 bei 0..100, 0 bei 50 = neutral)
+    mov eax, [seParams + 5*4]
+    sub eax, 50
+    imul eax, 980
+    mov [rsp + 0x4C], eax               ; sweepDelta
+
+    mov eax, [seParams + 6*4]
+    mov [rsp + 0x60], eax               ; detuneVal
+
+    mov dword [rsp + 0x3C], 0           ; lpState
+    mov qword [rsp + 0x50], 0           ; readPos1 (48.16)
+    mov qword [rsp + 0x58], 0           ; readPos2 (48.16)
+
+    mov eax, [rsp + 0x64]
+    shl eax, 17
+    lea rsi, [pcmOrigSlots]
+    add rsi, rax
+    lea rdi, [pcmSlots]
+    add rdi, rax
+
+    xor ebx, ebx
+.sfx_loop:
+    ; 1. Aktuelle Leseschrittweite (16.16) fuer Pitch-Sweep berechnen
+    mov r8d, 65536
+    movsxd rax, dword [rsp + 0x4C]
+    test rax, rax
+    jz .sfx_step_ok
+    imul rax, rbx
+    cqo
+    idiv r12
+    add r8d, eax
+    cmp r8d, 4096
+    jge .sfx_step_ok
+    mov r8d, 4096
+.sfx_step_ok:
+
+    ; 2. Hauptsample lesen
+    mov rax, [rsp + 0x50]
+    mov rcx, rax
+    shr rcx, 16
+    mov edx, r8d
+    add rax, rdx
+    mov [rsp + 0x50], rax
+    xor r13d, r13d
+    cmp ecx, [rsp + 0x48]
+    jae .sfx_osc2
+    movzx r13d, byte [rsi + rcx]
+    sub r13d, 128
+
+    ; 3. Optionaler Chorus / Detune-Layer
+.sfx_osc2:
+    mov ecx, [rsp + 0x60]
+    test ecx, ecx
+    jz .sfx_lp
+    mov eax, r8d
+    imul rax, rcx
+    shr rax, 11
+    add eax, r8d
+    mov rdx, [rsp + 0x58]
+    mov rcx, rdx
+    shr rcx, 16
+    add rdx, rax
+    mov [rsp + 0x58], rdx
+    xor eax, eax
+    cmp ecx, [rsp + 0x48]
+    jae .sfx_mix2
+    movzx eax, byte [rsi + rcx]
+    sub eax, 128
+.sfx_mix2:
+    add r13d, eax
+    sar r13d, 1
+
+    ; 4. Einpoliger Tiefpassfilter
+.sfx_lp:
+    shl r13d, 8
+    mov eax, r13d
+    sub eax, [rsp + 0x3C]
+    imul eax, [rsp + 0x40]
+    sar eax, 8
+    add [rsp + 0x3C], eax
+    mov r13d, [rsp + 0x3C]
+    sar r13d, 8
+
+    ; 5. ADSR-Huellkurve (r14d = 0..32768)
+    mov ecx, [rsp + 0x28]
+    cmp ebx, ecx
+    jae .sfx_chk_d
+    mov eax, ebx
+    shl eax, 15
+    xor edx, edx
+    div ecx
+    mov r14d, eax
+    jmp .sfx_env_ok
+
+.sfx_chk_d:
+    mov r15d, ebx
+    sub r15d, ecx
+    mov ecx, [rsp + 0x2C]
+    cmp r15d, ecx
+    jae .sfx_chk_s
+    mov eax, 32768
+    sub eax, [rsp + 0x38]
+    imul eax, r15d
+    xor edx, edx
+    div ecx
+    mov r14d, 32768
+    sub r14d, eax
+    jmp .sfx_env_ok
+
+.sfx_chk_s:
+    mov r15d, [rsp + 0x30]
+    cmp ebx, r15d
+    jae .sfx_chk_r
+    mov r14d, [rsp + 0x38]
+    jmp .sfx_env_ok
+
+.sfx_chk_r:
+    mov ecx, [rsp + 0x34]
+    test ecx, ecx
+    jz .sfx_env_zero
+    mov r15d, ebx
+    sub r15d, [rsp + 0x30]
+    mov eax, [rsp + 0x38]
+    imul eax, r15d
+    xor edx, edx
+    div ecx
+    mov r14d, [rsp + 0x38]
+    sub r14d, eax
+    jns .sfx_env_ok
+.sfx_env_zero:
+    xor r14d, r14d
+
+.sfx_env_ok:
+    ; 6. Huellkurve & Lautstaerke anwenden
+    imul r13d, r14d
+    sar r13d, 15
+    imul r13d, [rsp + 0x44]
+    sar r13d, 8
+    add r13d, 128
+    cmp r13d, 0
+    jge .sfx_c_hi
+    xor r13d, r13d
+.sfx_c_hi:
+    cmp r13d, 255
+    jle .sfx_st
+    mov r13d, 255
+.sfx_st:
+    mov [rdi + rbx], r13b
+
+    inc ebx
+    cmp ebx, r12d
+    jb .sfx_loop
+
+    ; Slot-Laenge aktualisieren (Name, C2-Stimmung und bestehende Loops bleiben erhalten)
+    mov ebx, [rsp + 0x64]
+    lea rdx, [sampHasPcm]
+    mov byte [rdx + rbx], 1
+    lea rdx, [sampLenTbl]
+    mov [rdx + rbx*4], r12d
+
+    lea rdx, [sampLoopEndTbl]
+    mov ecx, [rdx + rbx*4]
+    cmp ecx, 0xFFFFF
+    jae .sfx_fin
+    cmp ecx, r12d
+    jbe .sfx_lp_s
+    mov ecx, r12d
+    mov [rdx + rbx*4], ecx
+.sfx_lp_s:
+    lea rdx, [sampLoopStartTbl]
+    mov eax, [rdx + rbx*4]
+    lea r8d, [rax + 16]
+    cmp r8d, ecx
+    jbe .sfx_fin
+    mov eax, ecx
+    sub eax, 16
+    jns .sfx_lp_st
+    xor eax, eax
+.sfx_lp_st:
+    mov [rdx + rbx*4], eax
+
+.sfx_fin:
+    mov dword [seLastSlot], -1
+    call samped_sync_sel
+    lea rcx, [stSmpFx]
+    call set_status
+
+    cmp dword [rsp + 0x24], 0
+    je .sfx_no_prev
+    mov eax, [curOct]
+    imul eax, 12
+    call samped_preview
+.sfx_no_prev:
+    mov dword [dirty], 1
+
+.sfx_done:
+    add rsp, 0x78
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rbx
+    ret
+
+; Original-Sample (pcmOrigSlots) mit neutralen Slidern wiederherstellen ([Orig ] Button)
+samped_restore_orig:
+    push rbx
+    push rsi
+    push rdi
+    sub rsp, 0x20
+
+    mov ebx, [curInst]
+    and ebx, MAX_SAMPS - 1
+    lea rdx, [slotOrigLen]
+    mov ecx, [rdx + rbx*4]
+    test ecx, ecx
+    jz .sro_synth_def
+
+    cmp ecx, MAX_SAMP_BYTES
+    jbe .sro_cp
+    mov ecx, MAX_SAMP_BYTES
+.sro_cp:
+    mov eax, ebx
+    shl eax, 17
+    lea rsi, [pcmOrigSlots]
+    add rsi, rax
+    lea rdi, [pcmSlots]
+    add rdi, rax
+    push rcx
+    rep movsb
+    pop rcx
+
+    lea rdx, [sampHasPcm]
+    mov byte [rdx + rbx], 1
+    lea rdx, [sampLenTbl]
+    mov [rdx + rbx*4], ecx
+
+    mov dword [seMode], 1
+    mov dword [seParams + 0*4], 0
+    mov dword [seParams + 1*4], 0
+    mov dword [seParams + 2*4], 100
+    mov dword [seParams + 3*4], 0
+    mov dword [seParams + 4*4], 100
+    mov dword [seParams + 5*4], 50
+    mov dword [seParams + 6*4], 0
+    mov dword [seParams + 7*4], 100
+    mov dword [seParams + 8*4], 100
+    call samped_save_cur_slot
+
+    mov dword [seLastSlot], -1
+    call samped_sync_sel
+    lea rcx, [stOrigOk]
+    call set_status
+    mov eax, [curOct]
+    imul eax, 12
+    call samped_preview
+    mov dword [dirty], 1
+    jmp .sro_done
+
+.sro_synth_def:
+    mov ecx, ebx
+    call samped_reset_slot_synth
+    call samped_load_cur_slot
+    cmp dword [seLiveSynth], 0
+    je .sro_done
+    mov ecx, 2
+    mov edx, 1
+    call synth_render_to_slot
+
+.sro_done:
+    add rsp, 0x20
+    pop rdi
+    pop rsi
+    pop rbx
+    ret
+
+; ============================================================================
+; ADSR-Synthesizer-Generator (MOD:SYNTH) -> rendert 8-Bit-PCM in curInst
 ; Eingabe: ECX = loopMode (0=aus, 1=Auto-Loop berechnen, 2=bestehenden Loop behalten)
 ;          EDX = doPreview (0=stumm fuer Drag, 1=sofort vorhoeren)
 ; ============================================================================
@@ -1372,7 +1970,8 @@ synth_render_to_slot:
 
     cmp dword [rsp + 0x60], 0
     je .sr_no_prev
-    mov al, 12
+    mov eax, [curOct]
+    imul eax, 12
     call samped_preview
 .sr_no_prev:
     mov dword [dirty], 1
@@ -1388,7 +1987,13 @@ synth_render_to_slot:
     pop rbx
     ret
 
-; Preset (ECX = 0..5) laden und sofort in aktiven Slot rendern (Lautstaerke bleibt erhalten)
+; Dispatcher: je nach seMode entweder Synth oder Sample-FX ausfuehren (ECX=loopMode, EDX=doPreview)
+samped_apply_cur_mode:
+    cmp dword [seMode], 0
+    jne sample_fx_render_to_slot
+    jmp synth_render_to_slot
+
+; Preset (ECX = 0..5) laden, Slot auf MOD:SYNTH schalten und sofort rendern
 apply_synth_preset:
     push rbx
     sub rsp, 0x20
@@ -1397,6 +2002,7 @@ apply_synth_preset:
     lea rsi, [sePresets]
     add rsi, rbx
 
+    mov dword [seMode], 0
     movzx eax, byte [rsi + 0]
     mov [seWave], eax
     movzx eax, byte [rsi + 1]
@@ -1413,6 +2019,9 @@ apply_synth_preset:
 
     movzx ecx, byte [rsi + 10]
     mov [seAutoLoop], ecx
+    call samped_save_cur_slot
+
+    mov ecx, [seAutoLoop]
     mov edx, 1
     call synth_render_to_slot
 
@@ -1500,7 +2109,7 @@ se_update_loop_drag:
     pop rbx
     ret
 
-; Slider-Wert anhand virtueller X-Position (ECX = 0..959) aktualisieren und live rendern
+; Slider-Wert anhand virtueller X-Position (ECX = 0..959) aktualisieren, speichern & live anwenden
 se_update_slider_drag:
     push rbx
     sub rsp, 0x20
@@ -1545,13 +2154,14 @@ se_update_slider_drag:
     cmp eax, [rdx + rbx*4]
     je .usd_done
     mov [rdx + rbx*4], eax
+    call samped_save_cur_slot
     mov dword [dirty], 1
 
     cmp dword [seLiveSynth], 0
     je .usd_done
-    mov ecx, 2                          ; Bestehende Loop-Striche beibehalten
+    mov ecx, 2
     xor edx, edx
-    call synth_render_to_slot
+    call samped_apply_cur_mode
 
 .usd_done:
     add rsp, 0x20
@@ -1590,7 +2200,8 @@ samped_mouse_up:
     jne .smu_redraw
     cmp dword [seLiveSynth], 0
     je .smu_redraw
-    mov al, 12
+    mov eax, [curOct]
+    imul eax, 12
     call samped_preview
 
 .smu_redraw:
@@ -1612,6 +2223,7 @@ samped_keydown:
 
     mov ebx, ecx
     mov esi, edx
+    call samped_load_cur_slot
 
     cmp ebx, VK_ESCAPE
     jne .sk_f1
@@ -1700,6 +2312,7 @@ samped_mouse_down:
     mov r12d, ecx
     mov r13d, edx
     mov ebx, r8d
+    call samped_load_cur_slot
 
     ; Zeile 0 (Kopfzeile): Slot, Loop, Zurueck
     test r13d, r13d
@@ -1742,7 +2355,7 @@ samped_mouse_down:
     jmp .sm_done
 
 .sm_chk_wave:
-    ; Zeilen 2..19 (Wellenform): Loop-Striche L/E direkt greifen & ziehen oder Auswahl setzen
+    ; Zeilen 2..19 (Wellenform): Loop-Striche L/E greifen & ziehen oder Auswahl setzen
     cmp r13d, 2
     jb .sm_chk_act
     cmp r13d, 19
@@ -1906,7 +2519,6 @@ samped_mouse_down:
     ja .sm_act_rec
     call stop_recording
     call load_wav_dialog
-    mov dword [seLastSlot], -1
     call samped_sync_sel
     jmp .sm_done
 
@@ -1981,7 +2593,6 @@ samped_mouse_down:
     cmp r12d, 78
     ja .sm_done
     call unload_wav_slot
-    mov dword [seLastSlot], -1
     call samped_sync_sel
     jmp .sm_done
 
@@ -2043,9 +2654,11 @@ samped_mouse_down:
     jmp .sm_done
 
 .sm_chk_swave:
-    ; Zeile 28 (Synth-Wellenform und Pulsbreite -> bei Live-Synth sofort rendern, Loop behalten)
+    ; Zeile 28 (Wellenform & Pulsbreite: nur im MOD:SYNTH aktiv)
     cmp r13d, 28
     jne .sm_chk_sliders
+    cmp dword [seMode], 0
+    jne .sm_done
 
     cmp r12d, 61
     jb .sm_sw_btns
@@ -2066,6 +2679,7 @@ samped_mouse_down:
     mov eax, 10
 .sm_pw_st:
     mov [sePulse], eax
+    call samped_save_cur_slot
     cmp dword [seLiveSynth], 0
     je .sm_done
     mov ecx, 2
@@ -2090,6 +2704,7 @@ samped_mouse_down:
     cmp edx, 9
     jae .sm_done
     mov [seWave], eax
+    call samped_save_cur_slot
     cmp dword [seLiveSynth], 0
     je .sm_done
     mov ecx, 2
@@ -2098,7 +2713,7 @@ samped_mouse_down:
     jmp .sm_done
 
 .sm_chk_sliders:
-    ; Zeilen 30..38 (9 ADSR-, Synth- und Lautstaerke-Slider mit Live-Drag)
+    ; Zeilen 30..38 (9 Slider: aktiv in MOD:SYNTH und MOD:SAMPLE)
     cmp r13d, 30
     jb .sm_chk_presets
     cmp r13d, 38
@@ -2157,11 +2772,12 @@ samped_mouse_down:
     mov eax, 100
 .sm_sl_st:
     mov [rdx + rcx*4], eax
+    call samped_save_cur_slot
     cmp dword [seLiveSynth], 0
     je .sm_done
     mov ecx, 2
     mov edx, 1
-    call synth_render_to_slot
+    call samped_apply_cur_mode
     jmp .sm_done
 
 .sm_chk_presets:
@@ -2188,25 +2804,74 @@ samped_mouse_down:
     jmp .sm_done
 
 .sm_chk_render:
-    ; Zeile 42: [LIVE-SYNTH:AN ] [AUTO-LOOP:AUS] [-> Slot] [Slot  -] [Slot  +]
+    ; Zeile 42: [MOD:SYNTH ] [LIVE:AN ] [AUTOLP:AUS] [-> Slot] [Slot  -] [Slot  +] [Orig ]
     cmp r13d, 42
     jne .sm_chk_recbar
     test ebx, ebx
     jnz .sm_done
 
+    ; [MOD:SYNTH ] / [MOD:SAMPLE] (Spalten 3..14)
     cmp r12d, 3
     jb .sm_done
-    cmp r12d, 18
+    cmp r12d, 14
+    ja .sm_ren_live
+    cmp dword [seMode], 0
+    jne .sm_to_synth
+
+    ; Umschalten auf MOD:SAMPLE (falls Original oder PCM im Slot vorhanden)
+    mov eax, [curInst]
+    and eax, MAX_SAMPS - 1
+    lea rdx, [slotOrigLen]
+    cmp dword [rdx + rax*4], 0
+    jne .sm_to_sample_ok
+    lea rdx, [sampHasPcm]
+    cmp byte [rdx + rax], 0
+    je .sm_done
+    mov ecx, eax
+    call samped_commit_orig_slot
+    call samped_load_cur_slot
+    mov dword [dirty], 1
+    jmp .sm_done
+
+.sm_to_sample_ok:
+    mov dword [seMode], 1
+    call samped_save_cur_slot
+    cmp dword [seLiveSynth], 0
+    je .sm_done
+    mov ecx, 2
+    mov edx, 1
+    call sample_fx_render_to_slot
+    jmp .sm_done
+
+.sm_to_synth:
+    mov dword [seMode], 0
+    call samped_save_cur_slot
+    cmp dword [seLiveSynth], 0
+    je .sm_done
+    mov ecx, 2
+    mov edx, 1
+    call synth_render_to_slot
+    jmp .sm_done
+
+.sm_ren_live:
+    ; [LIVE:AN ] / [LIVE:AUS] (Spalten 16..25)
+    cmp r12d, 16
+    jb .sm_done
+    cmp r12d, 25
     ja .sm_ren_al
     xor dword [seLiveSynth], 1
     jmp .sm_done
 
 .sm_ren_al:
-    cmp r12d, 20
+    ; [AUTOLP:AUS] / [AUTOLP:AN ] (Spalten 27..38)
+    cmp r12d, 27
     jb .sm_done
-    cmp r12d, 34
+    cmp r12d, 38
     ja .sm_ren_now
     xor dword [seAutoLoop], 1
+    call samped_save_cur_slot
+    cmp dword [seMode], 0
+    jne .sm_done
     cmp dword [seLiveSynth], 0
     je .sm_done
     mov ecx, [seAutoLoop]
@@ -2215,19 +2880,21 @@ samped_mouse_down:
     jmp .sm_done
 
 .sm_ren_now:
-    cmp r12d, 36
+    ; [-> Slot] (Spalten 40..48)
+    cmp r12d, 40
     jb .sm_done
-    cmp r12d, 44
+    cmp r12d, 48
     ja .sm_ren_sm
     mov ecx, 2
     mov edx, 1
-    call synth_render_to_slot
+    call samped_apply_cur_mode
     jmp .sm_done
 
 .sm_ren_sm:
-    cmp r12d, 46
+    ; [Slot  -] (Spalten 50..58)
+    cmp r12d, 50
     jb .sm_done
-    cmp r12d, 54
+    cmp r12d, 58
     ja .sm_ren_sp
     mov eax, [curInst]
     dec eax
@@ -2238,10 +2905,11 @@ samped_mouse_down:
     jmp .sm_done
 
 .sm_ren_sp:
-    cmp r12d, 56
+    ; [Slot  +] (Spalten 60..68)
+    cmp r12d, 60
     jb .sm_done
-    cmp r12d, 64
-    ja .sm_done
+    cmp r12d, 68
+    ja .sm_ren_orig
     mov eax, [curInst]
     inc eax
     and eax, MAX_SAMPS - 1
@@ -2250,8 +2918,17 @@ samped_mouse_down:
     call samped_sync_sel
     jmp .sm_done
 
+.sm_ren_orig:
+    ; [Orig ] (Spalten 70..76)
+    cmp r12d, 70
+    jb .sm_done
+    cmp r12d, 76
+    ja .sm_done
+    call samped_restore_orig
+    jmp .sm_done
+
 .sm_chk_recbar:
-    ; Zeile 47 (Aufnahmegeraet-Auswahl: [<] Spalten 6..8, Name 10..37, [>] 39..41)
+    ; Zeile 47 (Aufnahmegeraet-Auswahl)
     cmp r13d, 47
     jne .sm_chk_bot
 
@@ -2470,7 +3147,6 @@ draw_samped_screen:
     mov r10d, COL_BLACK
     call fill_rect
 
-    ; Waehrend der Aufnahme live wachsende Wellenform aus recBuf zeichnen
     cmp dword [isRecording], 0
     jne .ds_rec_wf
 
@@ -2502,7 +3178,6 @@ draw_samped_screen:
     call fill_rect
 .ds_no_sel_bg:
 
-    ; Nulllinie bei y = 132
     mov ecx, 16
     mov edx, 132
     mov r8d, 928
@@ -2602,7 +3277,7 @@ draw_samped_screen:
     cmp edi, 464
     jb .ds_wf_loop
 
-    ; Loop-Linien mit greifbaren Anfassern (L oben, E unten) einzeichnen
+    ; Loop-Linien mit greifbaren Anfassern (L oben, E unten)
     lea rdx, [sampLoopEndTbl]
     mov r15d, [rdx + rbx*4]
     cmp r15d, r13d
@@ -2612,7 +3287,6 @@ draw_samped_screen:
     cmp r15d, r14d
     jbe .ds_wf_done
 
-    ; --- Loop-Start-Strich + Griff [L] oben ---
     mov eax, r14d
     imul rax, 928
     xor edx, edx
@@ -2665,7 +3339,6 @@ draw_samped_screen:
     mov r10d, COL_BLACK
     call draw_char_px
 
-    ; --- Loop-Ende-Strich + Griff [E] unten ---
     mov eax, r15d
     imul rax, 928
     xor edx, edx
@@ -2724,7 +3397,6 @@ draw_samped_screen:
     jmp .ds_wf_done
 
 .ds_rec_wf:
-    ; Live-Aufnahme-Wellenform ueber das 5,9-Sekunden-Zeitfenster zeichnen
     mov ecx, 16
     mov edx, 132
     mov r8d, 928
@@ -2740,7 +3412,7 @@ draw_samped_screen:
     jbe .ds_rwf_cc
     mov eax, 464
 .ds_rwf_cc:
-    mov r14d, eax                       ; Anzahl bereits gefuellter 2-px-Spalten
+    mov r14d, eax
     test r14d, r14d
     jz .ds_rwf_head
 
@@ -3030,7 +3702,7 @@ draw_samped_screen:
     cmp edi, 7
     jb .ds_fxb_loop
 
-    ; --- Zeilen 26..45: Synth- / Instrument-Designer (20 Zeilen hoch) ---
+    ; --- Zeilen 26..45: Instrument-Designer (MOD:SYNTH / MOD:SAMPLE) ---
     mov ecx, 1 * CHAR_W
     mov edx, 26 * CHAR_H
     mov r8d, 78 * CHAR_W
@@ -3050,6 +3722,10 @@ draw_samped_screen:
     mov r8d, 78 * CHAR_W
     mov r9d, CHAR_H
     mov r10d, COL_PURP
+    cmp dword [seMode], 0
+    je .ds_shdr_bg
+    mov r10d, COL_HDR_ON
+.ds_shdr_bg:
     call fill_rect
 
     mov ecx, 2
@@ -3059,12 +3735,16 @@ draw_samped_screen:
     mov r10d, COL_WHITE
     call draw_text
 
-    ; Zeile 28: Wellenform-Buttons + Pulsbreite
+    ; Zeile 28: Wellenform-Buttons + Pulsbreite (im MOD:SAMPLE abgeblendet)
     mov ecx, 3
     mov edx, 28
     lea r8, [seWaveBar + 3]
     mov r9d, 6
     mov r10d, COL_TEAL
+    cmp dword [seMode], 0
+    je .ds_wl_c
+    mov r10d, COL_MUTED
+.ds_wl_c:
     call draw_text
 
     xor edi, edi
@@ -3077,6 +3757,8 @@ draw_samped_screen:
     mov r8d, 9 * CHAR_W
     mov r9d, CHAR_H
     mov r10d, COL_BEAT
+    cmp dword [seMode], 0
+    jne .ds_wb_bg
     cmp edi, [seWave]
     jne .ds_wb_bg
     mov r10d, COL_CURSOR
@@ -3088,6 +3770,9 @@ draw_samped_screen:
     lea r8, [seWaveBar]
     add r8, r14
     mov r9d, 9
+    mov r10d, COL_MUTED
+    cmp dword [seMode], 0
+    jne .ds_wb_tx
     mov r10d, COL_NOTE
     cmp edi, [seWave]
     jne .ds_wb_tx
@@ -3107,9 +3792,13 @@ draw_samped_screen:
     lea r8, [sePulseTxt]
     mov r9d, 16
     mov r10d, COL_CYAN
+    cmp dword [seMode], 0
+    je .ds_pw_c
+    mov r10d, COL_MUTED
+.ds_pw_c:
     call draw_text
 
-    ; Zeilen 30..38: 9 grafische Parameter-Slider (inkl. Lautstaerke)
+    ; Zeilen 30..38: 9 grafische Parameter-Slider
     xor edi, edi
 .ds_sl_loop:
     lea r14d, [rdi + 30]
@@ -3246,10 +3935,29 @@ draw_samped_screen:
     cmp edi, 6
     jb .ds_pr_loop
 
-    ; Zeile 42: [LIVE-SYNTH:AN ] [AUTO-LOOP:AUS] [-> Slot] [Slot  -] [Slot  +]
+    ; Zeile 42: [MOD:SYNTH ] [LIVE:AN ] [AUTOLP:AUS] [-> Slot] [Slot  -] [Slot  +] [Orig ]
     mov ecx, 3 * CHAR_W
     mov edx, 42 * CHAR_H
-    mov r8d, 16 * CHAR_W
+    mov r8d, 12 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_PURPHI
+    lea r14, [txtModSynth]
+    cmp dword [seMode], 0
+    je .ds_mod_b
+    mov r10d, COL_CYAN
+    lea r14, [txtModSample]
+.ds_mod_b:
+    call fill_rect
+    mov ecx, 3
+    mov edx, 42
+    mov r8, r14
+    mov r9d, 12
+    mov r10d, COL_BLACK
+    call draw_text
+
+    mov ecx, 16 * CHAR_W
+    mov edx, 42 * CHAR_H
+    mov r8d, 10 * CHAR_W
     mov r9d, CHAR_H
     mov r10d, COL_HDR_OFF
     lea r14, [txtLiveOff]
@@ -3261,16 +3969,16 @@ draw_samped_screen:
     mov r15d, COL_BLACK
 .ds_live_b:
     call fill_rect
-    mov ecx, 3
+    mov ecx, 16
     mov edx, 42
     mov r8, r14
-    mov r9d, 16
+    mov r9d, 10
     mov r10d, r15d
     call draw_text
 
-    mov ecx, 20 * CHAR_W
+    mov ecx, 27 * CHAR_W
     mov edx, 42 * CHAR_H
-    mov r8d, 15 * CHAR_W
+    mov r8d, 12 * CHAR_W
     mov r9d, CHAR_H
     mov r10d, COL_HDR_OFF
     lea r14, [txtAlOff]
@@ -3280,50 +3988,71 @@ draw_samped_screen:
     lea r14, [txtAlOn]
 .ds_al_b:
     call fill_rect
-    mov ecx, 20
+    mov ecx, 27
     mov edx, 42
     mov r8, r14
-    mov r9d, 15
+    mov r9d, 12
     mov r10d, COL_WHITE
     call draw_text
 
-    mov ecx, 36 * CHAR_W
+    mov ecx, 40 * CHAR_W
     mov edx, 42 * CHAR_H
     mov r8d, 9 * CHAR_W
     mov r9d, CHAR_H
     mov r10d, COL_PURPHI
     call fill_rect
-    mov ecx, 36
+    mov ecx, 40
     mov edx, 42
-    lea r8, [seRenderBar + 36]
+    lea r8, [seRenderBar + 40]
     mov r9d, 9
     mov r10d, COL_BLACK
     call draw_text
 
-    mov ecx, 46 * CHAR_W
+    mov ecx, 50 * CHAR_W
     mov edx, 42 * CHAR_H
     mov r8d, 9 * CHAR_W
     mov r9d, CHAR_H
     mov r10d, COL_BEAT
     call fill_rect
-    mov ecx, 46
+    mov ecx, 50
     mov edx, 42
-    lea r8, [seRenderBar + 46]
+    lea r8, [seRenderBar + 50]
     mov r9d, 9
     mov r10d, COL_CYAN
     call draw_text
 
-    mov ecx, 56 * CHAR_W
+    mov ecx, 60 * CHAR_W
     mov edx, 42 * CHAR_H
     mov r8d, 9 * CHAR_W
     mov r9d, CHAR_H
     mov r10d, COL_BEAT
     call fill_rect
-    mov ecx, 56
+    mov ecx, 60
     mov edx, 42
-    lea r8, [seRenderBar + 56]
+    lea r8, [seRenderBar + 60]
     mov r9d, 9
     mov r10d, COL_CYAN
+    call draw_text
+
+    ; [Orig ] Button (Spalten 70..76)
+    mov ecx, 70 * CHAR_W
+    mov edx, 42 * CHAR_H
+    mov r8d, 7 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_HDR_OFF
+    mov r15d, COL_MUTED
+    lea rdx, [slotOrigLen]
+    cmp dword [rdx + rbx*4], 0
+    je .ds_orig_b
+    mov r10d, COL_HDR_ON
+    mov r15d, COL_WHITE
+.ds_orig_b:
+    call fill_rect
+    mov ecx, 70
+    mov edx, 42
+    lea r8, [seRenderBar + 70]
+    mov r9d, 7
+    mov r10d, r15d
     call draw_text
 
     ; Zeile 44: Aufnahme-Banner oder Bedienungshinweis
@@ -3360,7 +4089,6 @@ draw_samped_screen:
     mov r10d, COL_TEAL
     call draw_text
 
-    ; [<] Button (Spalten 6..8)
     mov ecx, 6 * CHAR_W
     mov edx, 47 * CHAR_H
     mov r8d, 3 * CHAR_W
@@ -3374,7 +4102,6 @@ draw_samped_screen:
     mov r10d, COL_WHITE
     call draw_text
 
-    ; Geraetename (Spalten 10..37 = 28 Zeichen)
     mov ecx, 10 * CHAR_W
     mov edx, 47 * CHAR_H
     mov r8d, 28 * CHAR_W
@@ -3392,7 +4119,6 @@ draw_samped_screen:
 .ds_rb_dncol:
     call draw_text
 
-    ; [>] Button (Spalten 39..41)
     mov ecx, 39 * CHAR_W
     mov edx, 47 * CHAR_H
     mov r8d, 3 * CHAR_W
@@ -3406,7 +4132,6 @@ draw_samped_screen:
     mov r10d, COL_WHITE
     call draw_text
 
-    ; VU-Label (Spalten 43..45)
     mov ecx, 43
     mov edx, 47
     lea r8, [txtVuLbl]
@@ -3414,7 +4139,6 @@ draw_samped_screen:
     mov r10d, COL_TEAL
     call draw_text
 
-    ; VU-Balken-Hintergrund (Spalten 47..70 = 288 px)
     mov ecx, 47 * CHAR_W
     mov edx, 47 * CHAR_H + 1
     mov r8d, 24 * CHAR_W
@@ -3432,7 +4156,6 @@ draw_samped_screen:
     cmp dword [isRecording], 0
     je .ds_vu_idle
 
-    ; 3-Zonen-Live-VU-Balken (0..192 Cyan, 192..252 Gelb, 252..288 Pink/Clip)
     mov eax, [recVuLevel]
     imul eax, 288
     xor edx, edx
@@ -3446,7 +4169,6 @@ draw_samped_screen:
     test r14d, r14d
     jz .ds_vu_peak
 
-    ; Zone 1: Cyan (0..192 px)
     mov r8d, r14d
     cmp r8d, 192
     jbe .ds_vu_z1
@@ -3458,7 +4180,6 @@ draw_samped_screen:
     mov r10d, COL_CYAN
     call fill_rect
 
-    ; Zone 2: Gelb (192..252 px)
     cmp r14d, 192
     jbe .ds_vu_peak
     mov r8d, r14d
@@ -3473,7 +4194,6 @@ draw_samped_screen:
     mov r10d, COL_CURSOR
     call fill_rect
 
-    ; Zone 3: Pink/Clip (252..288 px)
     cmp r14d, 252
     jbe .ds_vu_peak
     mov r8d, r14d
@@ -3485,7 +4205,6 @@ draw_samped_screen:
     call fill_rect
 
 .ds_vu_peak:
-    ; Peak-Hold-Markierung
     mov eax, [recVuPeakHold]
     cmp eax, 3
     jb .ds_vu_time
@@ -3509,7 +4228,6 @@ draw_samped_screen:
     call fill_rect
 
 .ds_vu_time:
-    ; Aufnahmezeit "X.Y/5.9" (Spalten 72..78)
     mov eax, [recWritePos]
     imul rax, 10
     xor edx, edx

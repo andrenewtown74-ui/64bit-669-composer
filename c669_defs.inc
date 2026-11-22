@@ -255,6 +255,8 @@ stRecOn      db "REC... "
 stRecOk      db "REC OK "
 stRecErr     db "REC ERR"
 stSynOk      db "SYN OK "
+stSmpFx      db "SMP FX "
+stOrigOk     db "ORIG OK"
 stFxNorm     db "NORM OK"
 stFxFi       db "FADE IN"
 stFxFo       db "FADEOUT"
@@ -276,13 +278,13 @@ seTopBar    db " SAMPLE-EDITOR  Slot:00              Len:00000  Loop:OFF  [ESC=T
 seInfoBar   db " Sel:00000-00000  Loop:00000-FFFFF  [Loop L/E ziehen | L/R=Auswahl]            "
 seActBar    db " [WAV Laden] [REC Start] [Vorhoeren] [StopTon] [Loop:ON] [Sel->Lp] [Trim] [Clr]"
 seFxBar     db " FX: [Normalis] [Fade In] [FadeOut] [Reverse] [Boost +] [HalbLen] [SelAll]     "
-seSynthHdr  db " SYNTHESIZER / INSTRUMENT-DESIGNER (Live-Aenderung direkt auf aktiven Slot)   "
+seSynthHdr  db " INSTRUMENT-DESIGNER: SYNTH (Oszillator) / SAMPLE-FX (ADSR, Filter, Chorus)   "
 seWaveBar   db "   Welle: [0:Sinus] [1:Saege] [2:Puls ] [3:Dreie] [4:Rausc]                    "
 sePulseTxt  db "Pulsbreite: 50% "
 sePresetBar db "   Presets: [808Kick] [Snare  ] [AcidSaw] [ChipSqr] [SoftPad] [LaserFX]        "
-seRenderBar db "   [LIVE-SYNTH:AN ] [AUTO-LOOP:AUS] [-> Slot] [Slot  -] [Slot  +]              "
+seRenderBar db "   [MOD:SYNTH ] [LIVE:AN ] [AUTOLP:AUS] [-> Slot] [Slot  -] [Slot  +] [Orig ]  "
 seRecBanner db "   *** AUFNAHME LAEUFT (22050 Hz, 8-Bit Mono) - [REC Stop!] zum Beenden ***   "
-seKeyHint   db " Slider ziehen = Live-Update | Loop-Striche L/E ziehen | QWERTZ = Live spielen"
+seKeyHint   db " Slider = Live pro Slot | MOD:SAMPLE bearbeitet 669/WAV/REC | L/E = Loop      "
 seBotBar    db " Slot:00  Oct:2  [SPACE=Play Song]  [Strg+E / ESC = Zurueck Tracker]       [?] "
 seEmptyMsg  db " Slot nutzt internen Synth / leer - Regler bewegen, WAV laden oder REC nutzen "
 
@@ -290,10 +292,12 @@ txtRecBtnOn  db "[REC Start]"
 txtRecBtnOff db "[REC Stop!]"
 txtLpBtnOn   db "[Loop:ON]"
 txtLpBtnOff  db "[LoopOFF]"
-txtLiveOn    db "[LIVE-SYNTH:AN ]"
-txtLiveOff   db "[LIVE-SYNTH:AUS]"
-txtAlOn      db "[AUTO-LOOP:AN ]"
-txtAlOff     db "[AUTO-LOOP:AUS]"
+txtModSynth  db "[MOD:SYNTH ]"
+txtModSample db "[MOD:SAMPLE]"
+txtLiveOn    db "[LIVE:AN ]"
+txtLiveOff   db "[LIVE:AUS]"
+txtAlOn      db "[AUTOLP:AN ]"
+txtAlOff     db "[AUTOLP:AUS]"
 
 ; Startspalte und Breite der 7 Effekt-Buttons in Zeile 24
 seFxBtnPos:
@@ -321,9 +325,9 @@ seParamHints:
     db "Abfallzeit "
     db "Haltepegel "
     db "Ausklingen "
-    db "0.1..2.0 s "
+    db "Laenge/Gate"
     db "<50Dn >50Up"
-    db "2.Oszillat."
+    db "Chorus/Det."
     db "Tiefpass   "
     db "Pegel 0-100"
 
@@ -554,7 +558,7 @@ origNop       resd 1
 saveNos       resd 1
 saveNop       resd 1
 
-; Sample-Editor, Aufnahme-VU, Geraeteauswahl & ADSR-Synth-Zustand
+; Sample-Editor, Aufnahme-VU, Geraeteauswahl, Sample-FX & ADSR-Synth-Zustand
 isRecording   resd 1
 recStartTick  resd 1
 seRecDevId    resd 1            ; -1 = Windows-Standard (WAVE_MAPPER), 0..N-1 = Geraete-ID
@@ -565,6 +569,8 @@ recVuPeakHold resd 1            ; Peak-Hold-Anzeige (0..127)
 recVuHoldCnt  resd 1            ; Haltezaehler fuer Peak-Hold
 seLastSlot    resd 1
 seLastLen     resd 1
+seCurSlot     resd 1            ; Zuletzt in die Editor-UI geladener Slot (-1 = neu laden)
+seMode        resd 1            ; 0 = SYNTH, 1 = SAMPLE-FX (destruktionsfrei ab Original)
 seSelStart    resd 1
 seSelEnd      resd 1
 seWave        resd 1
@@ -575,6 +581,16 @@ seAutoLoop    resd 1            ; 1 = Synth setzt automatisch Sustain-Loop
 seDragMode    resd 1            ; 0=aus, 1=LoopStart, 2=LoopEnd, 3=Slider
 seDragParam   resd 1            ; Aktiver Slider-Index 0..8 beim Ziehen
 seParams      resd 9            ; Attack, Decay, Sustain, Release, Dauer, Sweep, Detune, Filter, Lautstaerke
+
+; Gespeicherte Editor-Konfiguration getrennt fuer jeden der 64 Slots
+alignb 16
+slotMode      resb MAX_SAMPS
+slotWave      resb MAX_SAMPS
+slotPulse     resb MAX_SAMPS
+slotAutoLoop  resb MAX_SAMPS
+alignb 4
+slotOrigLen   resd MAX_SAMPS
+slotParams    resd MAX_SAMPS * 9
 
 ; Zwischenablage-Status fuer Spur und Pattern
 clipChValid   resd 1
@@ -673,4 +689,5 @@ tunnelDist     resb DEMO_W * DEMO_H
 tunnelAngle    resb DEMO_W * DEMO_H
 tunnelFog      resb DEMO_W * DEMO_H
 pcmSlots       resb MAX_SAMPS * MAX_SAMP_BYTES
+pcmOrigSlots   resb MAX_SAMPS * MAX_SAMP_BYTES
 fileBuf        resb FILE_BUF_SIZE
