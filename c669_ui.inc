@@ -1,4 +1,4 @@
-; GDI-Darstellung, scrollende 64-Zeilen/128-Order/64-Sample-Ansicht, Tastatur-, Maus- und Hilfe-UI
+; GDI-Darstellung, scrollende 64-Zeilen/128-Order/64-Sample-Ansicht, Tastatur-, Maus-, Hilfe- und Demo-UI
 
 ; Byte AL als 2 Hex-Zeichen nach [R8] schreiben
 fmt_hex2:
@@ -30,9 +30,9 @@ fmt_hex5:
 ; Zeiger auf Zelle (ECX=pat 0..127, EDX=row 0..63, R8D=ch 0..7) in RAX berechnen
 get_cell_ptr:
     mov eax, ecx
-    shl eax, 11                         ; pat * 2048
+    shl eax, 11
     mov r9d, edx
-    shl r9d, 5                          ; row * 32
+    shl r9d, 5
     add eax, r9d
     lea eax, [rax + r8*4]
     lea r9, [patterns]
@@ -204,6 +204,26 @@ vk_to_hex:
     mov eax, 0xFF
     ret
 
+; 4K-Demo-Modus umschalten (startet Wiedergabe automatisch, falls pausiert)
+toggle_demo_mode:
+    xor dword [demoMode], 1
+    cmp dword [demoMode], 0
+    je .tdm_done
+    mov dword [showHelp], 0
+    cmp dword [isPlaying], 0
+    jne .tdm_done
+    mov dword [isPlaying], 1
+    mov eax, [curPat]
+    mov [playPat], eax
+    mov [dispPlayPat], eax
+    mov eax, [editRow]
+    mov [playRow], eax
+    mov [dispPlayRow], eax
+    mov dword [needPatTempo], 0
+    mov dword [tickSamples], 1
+.tdm_done:
+    ret
+
 ; ============================================================================
 ; Tastatur-Handler: ECX=wParam (VK), EDX=lParam
 ; ============================================================================
@@ -236,7 +256,7 @@ handle_keydown:
     jmp .k_done
 .kd_norm:
 
-    ; Strg-Kombinationen: O=669 laden, S=speichern, W=WAV, L=Loop, U=Reset, F=Fullscreen, B=Break, H=Hilfe
+    ; Strg-Kombinationen: O=Laden, S=Speichern, W=WAV, L=Loop, U=Reset, F=FS, B=Break, H=Hilfe, D=Demo
     mov ecx, VK_CONTROL
     call GetKeyState
     test ax, 0x8000
@@ -257,6 +277,8 @@ handle_keydown:
     je .do_break
     cmp ebx, 'H'
     je .do_help
+    cmp ebx, 'D'
+    je .do_demo
     jmp .k_done
 
 .no_ctrl:
@@ -318,12 +340,24 @@ handle_keydown:
 .do_help:
     test esi, 0x40000000
     jnz .k_done
+    mov dword [demoMode], 0
     xor dword [showHelp], 1
+    jmp .k_done
+
+.do_demo:
+    test esi, 0x40000000
+    jnz .k_done
+    call toggle_demo_mode
     jmp .k_done
 
 .chk_esc:
     cmp ebx, VK_ESCAPE
     jne .chk_space
+    cmp dword [demoMode], 0
+    je .esc_quit
+    mov dword [demoMode], 0
+    jmp .k_done
+.esc_quit:
     mov dword [running], 0
     jmp .k_done
 
@@ -378,8 +412,25 @@ handle_keydown:
 
 .chk_f6:
     cmp ebx, VK_F6
-    jne .chk_f1
+    jne .chk_demo_guard
     xor dword [songMode], 1
+    jmp .k_done
+
+.chk_demo_guard:
+    ; Im Demo-Modus schaltet TAB zwischen Plasma, 3D-Tunnel und Rasterbars um
+    cmp dword [demoMode], 0
+    je .chk_f1
+    cmp ebx, VK_TAB
+    jne .k_done
+    test esi, 0x40000000
+    jnz .k_done
+    mov eax, [demoFx]
+    inc eax
+    cmp eax, 3
+    jb .dfx_ok
+    xor eax, eax
+.dfx_ok:
+    mov [demoFx], eax
     jmp .k_done
 
 .chk_f1:
@@ -762,7 +813,6 @@ handle_keydown:
 
 ; ============================================================================
 ; Client-Koordinaten (ECX=x, EDX=y) in 80x50-Raster umrechnen (Fenster und Fullscreen)
-; Rueckgabe: EAX = Spalte (0..79) oder -1 ausserhalb, EDX = Zeile (0..49)
 ; ============================================================================
 mouse_to_grid:
     mov r9d, edx
@@ -831,7 +881,15 @@ handle_mouse_down:
 
     mov ebx, edx
 
-    ; Bei offenem Hilfe-Overlay schliesst jeder Klick die Hilfe
+    ; Im Demo-Modus: Linksklick kehrt zum Tracker zurueck, Rechtsklick = Play/Stop
+    cmp dword [demoMode], 0
+    je .md_chk_help
+    test ebx, ebx
+    jnz .md_toggle_play
+    mov dword [demoMode], 0
+    jmp .md_done
+
+.md_chk_help:
     cmp dword [showHelp], 0
     je .md_norm
     mov dword [showHelp], 0
@@ -846,8 +904,8 @@ handle_mouse_down:
     cmp eax, -1
     je .md_done
 
-    mov r12d, eax                       ; Spalte 0..79
-    mov r13d, edx                       ; Zeile 0..49
+    mov r12d, eax
+    mov r13d, edx
 
     ; Kopfzeile (Zeile 0): Mode PAT-LOOP / SONG-ORD umschalten
     test r13d, r13d
@@ -867,7 +925,7 @@ handle_mouse_down:
     cmp r13d, 13
     ja .md_chk_hdr
 
-    ; Sample-Liste (Spalten 1..33): Auswahl per Linksklick, Vorhoeren per Rechtsklick
+    ; Sample-Liste (Spalten 1..33)
     cmp r12d, 1
     jb .md_chk_ord
     cmp r12d, 33
@@ -895,7 +953,7 @@ handle_mouse_down:
     jmp .md_done
 
 .md_chk_ord:
-    ; Rechte Order-Liste (Spalten 72..78): Pattern waehlen / Rechtsklick startet Song ab Order
+    ; Rechte Order-Liste (Spalten 72..78)
     cmp r12d, 72
     jb .md_done
     cmp r12d, 78
@@ -928,7 +986,7 @@ handle_mouse_down:
     jmp .md_done
 
 .md_chk_hdr:
-    ; Kanal-Koepfe On/Off (Zeile 15): Kanal stummschalten und Stimme sofort stoppen
+    ; Kanal-Koepfe On/Off (Zeile 15)
     cmp r13d, 15
     jne .md_chk_pat
     cmp r12d, 8
@@ -965,9 +1023,8 @@ handle_mouse_down:
     add eax, [patViewTop]
     cmp eax, PAT_ROWS
     jae .md_done
-    mov r13d, eax                       ; Tatsaechliche Pattern-Zeile 0..63
+    mov r13d, eax
 
-    ; Linke Zeilennummer / Seitenbalken (Spalten 1..6)
     cmp r12d, 1
     jb .md_done
     cmp r12d, 6
@@ -986,7 +1043,6 @@ handle_mouse_down:
     jmp .md_done
 
 .md_pat_cell:
-    ; 8 Pattern-Spalten (Spalten 8..78): Cursor setzen / Rechtsklick hoert Zelle vor
     cmp r12d, 8
     jb .md_done
     mov eax, r12d
@@ -1020,20 +1076,28 @@ handle_mouse_down:
     jmp .md_done
 
 .md_chk_bot:
-    ; Fusszeile (Zeile 49): Werte per Links=+1 / Rechts=-1, Play, Break und Hilfe [?]
+    ; Fusszeile (Zeile 49): Werte (L=+/R=-), Play, Break, Demo [D] und Hilfe [?]
     cmp r13d, 49
     jne .md_done
 
-    ; Hilfe-Schaltflaeche [?] (Spalten 74..76)
-    cmp r12d, 74
-    jb .md_bot_tmp
+    ; Hilfe-Schaltflaeche [?] (Spalten 76..78)
     cmp r12d, 76
+    jb .md_bot_demo
+    cmp r12d, 78
     ja .md_done
     xor dword [showHelp], 1
     jmp .md_done
 
+.md_bot_demo:
+    ; Demo-Schaltflaeche [D] (Spalten 72..74)
+    cmp r12d, 72
+    jb .md_bot_tmp
+    cmp r12d, 74
+    ja .md_done
+    call toggle_demo_mode
+    jmp .md_done
+
 .md_bot_tmp:
-    ; Tmp:5 (Spalten 1..5)
     cmp r12d, 1
     jb .md_done
     cmp r12d, 5
@@ -1057,7 +1121,6 @@ handle_mouse_down:
     jmp .md_done
 
 .md_bot_oct:
-    ; Oct:2 (Spalten 7..11)
     cmp r12d, 7
     jb .md_done
     cmp r12d, 11
@@ -1075,7 +1138,6 @@ handle_mouse_down:
     jmp .md_done
 
 .md_bot_ch:
-    ; Ch:0 (Spalten 13..16)
     cmp r12d, 13
     jb .md_done
     cmp r12d, 16
@@ -1093,7 +1155,6 @@ handle_mouse_down:
     jmp .md_done
 
 .md_bot_pat:
-    ; Pat:00 (Spalten 18..23)
     cmp r12d, 18
     jb .md_done
     cmp r12d, 23
@@ -1111,7 +1172,6 @@ handle_mouse_down:
     jmp .md_done
 
 .md_bot_ins:
-    ; Ins:00 (Spalten 35..40)
     cmp r12d, 35
     jb .md_done
     cmp r12d, 40
@@ -1130,7 +1190,6 @@ handle_mouse_down:
     jmp .md_done
 
 .md_bot_stp:
-    ; Stp:1 (Spalten 42..46)
     cmp r12d, 42
     jb .md_done
     cmp r12d, 46
@@ -1222,13 +1281,36 @@ handle_mouse_wheel:
     cmp dword [showHelp], 0
     jne .mw_done
 
+    ; Im Demo-Modus wechselt das Mausrad ebenfalls den Effekt
+    cmp dword [demoMode], 0
+    je .mw_norm
     mov eax, ecx
     sar eax, 16
     test eax, eax
     jz .mw_done
-    mov ebx, -1                         ; Rad nach oben -> kleinere Zeile
+    mov edx, [demoFx]
+    js .mw_dfx_next
+    dec edx
+    jns .mw_dfx_st
+    mov edx, 2
+    jmp .mw_dfx_st
+.mw_dfx_next:
+    inc edx
+    cmp edx, 3
+    jb .mw_dfx_st
+    xor edx, edx
+.mw_dfx_st:
+    mov [demoFx], edx
+    jmp .mw_done
+.mw_norm:
+
+    mov eax, ecx
+    sar eax, 16
+    test eax, eax
+    jz .mw_done
+    mov ebx, -1
     jns .mw_dir_ok
-    mov ebx, 1                          ; Rad nach unten -> groessere Zeile
+    mov ebx, 1
 .mw_dir_ok:
 
     mov eax, edx
@@ -1255,7 +1337,6 @@ handle_mouse_wheel:
     cmp r13d, 13
     ja .mw_pat
 
-    ; Ueber Sample-Liste scrollen (2 Zeilen pro Rastung)
     cmp r12d, 34
     ja .mw_chk_ord
     mov eax, [sampViewTop]
@@ -1273,7 +1354,6 @@ handle_mouse_wheel:
     jmp .mw_done
 
 .mw_chk_ord:
-    ; Ueber Order-Liste scrollen (2 Zeilen pro Rastung)
     cmp r12d, 71
     jb .mw_pat
     mov eax, [ordViewTop]
@@ -1291,7 +1371,6 @@ handle_mouse_wheel:
     jmp .mw_done
 
 .mw_pat:
-    ; Pattern-Editor scrollen (4 Zeilen pro Rastung)
     mov eax, ebx
     shl eax, 2
     add eax, [editRow]
@@ -1364,31 +1443,28 @@ format_cell_text:
     ret
 
 ; ============================================================================
-; Hilfe-Overlay mittig in memDC zeichnen (Spalten 7..72, Zeilen 9..39)
+; Hilfe-Overlay mittig in memDC zeichnen (Spalten 7..72, Zeilen 8..39)
 ; ============================================================================
 draw_help_overlay:
     push rbx
     sub rsp, 0x20
 
-    ; Aeusserer Rahmen
     mov ecx, 7 * CHAR_W
-    mov edx, 9 * CHAR_H
+    mov edx, 8 * CHAR_H
     mov r8d, 66 * CHAR_W
-    mov r9d, 31 * CHAR_H
+    mov r9d, 32 * CHAR_H
     mov r10d, COL_HDR_ON
     call fill_rect
 
-    ; Schwarze Innenflaeche (3 px Rahmenstaerke)
     mov ecx, 7 * CHAR_W + 3
-    mov edx, 9 * CHAR_H + 3
+    mov edx, 8 * CHAR_H + 3
     mov r8d, 66 * CHAR_W - 6
-    mov r9d, 31 * CHAR_H - 6
+    mov r9d, 32 * CHAR_H - 6
     mov r10d, COL_BLACK
     call fill_rect
 
-    ; Titelbalken hinter Zeile 0
     mov ecx, 8 * CHAR_W
-    mov edx, 10 * CHAR_H
+    mov edx, 9 * CHAR_H
     mov r8d, 64 * CHAR_W
     mov r9d, CHAR_H
     mov r10d, COL_PURP
@@ -1404,7 +1480,7 @@ draw_help_overlay:
 .hl_c1:
     cmp ebx, 1
     je .hl_teal
-    cmp ebx, 27
+    cmp ebx, 28
     je .hl_teal
     cmp ebx, 2
     je .hl_purp
@@ -1412,7 +1488,7 @@ draw_help_overlay:
     je .hl_purp
     cmp ebx, 19
     je .hl_purp
-    cmp ebx, 28
+    cmp ebx, 29
     jne .hl_draw
     mov r10d, COL_CYAN
     jmp .hl_draw
@@ -1428,7 +1504,7 @@ draw_help_overlay:
     lea r8, [helpLines]
     add r8, rax
     mov ecx, 8
-    lea edx, [rbx + 10]
+    lea edx, [rbx + 9]
     mov r9d, 64
     call draw_text
 
@@ -1441,7 +1517,7 @@ draw_help_overlay:
     ret
 
 ; ============================================================================
-; Gesamte Composer-669-Oberflaeche in memDC zeichnen und ins Fenster blitten
+; Gesamte Composer-669-Oberflaeche oder 4K-Demo in memDC zeichnen und blitten
 ; Lokale Stack-Slots: [rsp + 0x58] = curDrawRow (0..63), [rsp + 0x5C] = curPatBrk
 ; ============================================================================
 draw_screen:
@@ -1459,6 +1535,13 @@ draw_screen:
     je .ds_no_follow
     call sync_play_scroll
 .ds_no_follow:
+
+    ; Bei aktivem Demo-Modus Visualizer rendern und direkt ausgeben
+    cmp dword [demoMode], 0
+    je .ds_tracker
+    call draw_demo_frame
+    jmp .ds_output
+.ds_tracker:
 
     xor ecx, ecx
     xor edx, edx
@@ -1512,7 +1595,6 @@ draw_screen:
     cmp ebx, 3
     jb .t_loop
 
-    ; Scrollende Sample-Liste (12 Zeilen ab sampViewTop) + scrollende Order-Liste (ab ordViewTop)
     xor ebx, ebx
 .up_loop:
     lea r12d, [rbx + 2]
@@ -1581,7 +1663,6 @@ draw_screen:
     mov r10d, COL_NOTE
     call draw_text
 
-    ; Rechte Order-Tabelle (128 moegliche Eintraege mit eigenem Pattern-Tempo)
     mov ebp, ebx
     add ebp, [ordViewTop]
     mov al, bpl
@@ -1613,7 +1694,7 @@ draw_screen:
     jmp .ord_c
 
 .ord_empty:
-    mov dword [lineBuf + 3], 0x2D202D2D ; "-- -"
+    mov dword [lineBuf + 3], 0x2D202D2D
     mov r10d, COL_DOT
 
 .ord_c:
@@ -1727,14 +1808,12 @@ draw_screen:
     cmp ebx, NUM_CH
     jb .vu_loop
 
-    ; Break-Zeile des aktuellen Patterns lokal sichern
     mov eax, [curPat]
     and eax, 127
     lea rdx, [patBreaks]
     movzx eax, byte [rdx + rax]
     mov [rsp + 0x5C], eax
 
-    ; Linker violetter Vertikalbalken fuer sichtbares 32-Zeilen-Fenster
     mov ecx, 4 * CHAR_W
     mov edx, 16 * CHAR_H
     mov r8d, 3 * CHAR_W
@@ -1742,7 +1821,6 @@ draw_screen:
     mov r10d, COL_PURP
     call fill_rect
 
-    ; Break-Markierung auf dem Seitenbalken
     mov eax, [rsp + 0x5C]
     sub eax, [patViewTop]
     js .no_bbar
@@ -1758,7 +1836,6 @@ draw_screen:
     call fill_rect
 .no_bbar:
 
-    ; Play-Positionszeiger auf dem Seitenbalken
     cmp dword [isPlaying], 0
     je .no_pbar
     mov eax, [curPat]
@@ -1779,7 +1856,6 @@ draw_screen:
     call fill_rect
 .no_pbar:
 
-    ; Edit-Positionszeiger auf dem Seitenbalken
     mov eax, [editRow]
     sub eax, [patViewTop]
     js .no_ebar
@@ -1839,13 +1915,12 @@ draw_screen:
     cmp ebx, NUM_CH
     jb .hdr_loop
 
-    ; 32 sichtbare Zeilen ab patViewTop aus dem 64-Zeilen-Pattern zeichnen
     xor r12d, r12d
 .row_draw:
     lea r13d, [r12 + 16]
     mov eax, r12d
     add eax, [patViewTop]
-    mov [rsp + 0x58], eax               ; Tatsaechliche Pattern-Zeile 0..63
+    mov [rsp + 0x58], eax
 
     lea r8, [lineBuf]
     call fmt_hex2
@@ -2006,7 +2081,6 @@ draw_screen:
     cmp r12d, VIEW_ROWS
     jb .row_draw
 
-    ; Fusszeile aktualisieren (inkl. Break-Zeile: Row:XX/YY)
     mov eax, [curTempo]
     lea rdx, [hexTbl]
     mov al, [rdx + rax]
@@ -2040,8 +2114,23 @@ draw_screen:
     mov r10d, COL_CYAN
     call draw_text
 
-    ; Hilfe-Schaltflaeche [?] rechts in der Fusszeile farblich hervorheben
-    mov ecx, 74 * CHAR_W
+    ; Demo-Schaltflaeche [D] (Spalten 72..74) hervorheben
+    mov ecx, 72 * CHAR_W
+    mov edx, 49 * CHAR_H
+    mov r8d, 3 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_HDR_ON
+    call fill_rect
+
+    mov ecx, 72
+    mov edx, 49
+    lea r8, [botBar + 72]
+    mov r9d, 3
+    mov r10d, COL_WHITE
+    call draw_text
+
+    ; Hilfe-Schaltflaeche [?] (Spalten 76..78) hervorheben
+    mov ecx, 76 * CHAR_W
     mov edx, 49 * CHAR_H
     mov r8d, 3 * CHAR_W
     mov r9d, CHAR_H
@@ -2052,19 +2141,18 @@ draw_screen:
 .q_bg:
     call fill_rect
 
-    mov ecx, 74
+    mov ecx, 76
     mov edx, 49
-    lea r8, [botBar + 74]
+    lea r8, [botBar + 76]
     mov r9d, 3
     mov r10d, COL_WHITE
     call draw_text
 
     cmp dword [showHelp], 0
-    je .no_help_ov
+    je .ds_output
     call draw_help_overlay
-.no_help_ov:
 
-    ; Ausgabe: Fenster 1:1 (BitBlt) oder Fullscreen mit Seitenverhaeltnis (StretchBlt)
+.ds_output:
     cmp dword [isFullscreen], 0
     je .blit_win
 
@@ -2172,7 +2260,6 @@ init_demo_patterns:
     mov ecx, MAX_PATS * PAT_BYTES
     rep stosb
 
-    ; Alle 128 Pattern-Tempos auf 5 und alle Breaks auf 63 (0x3F) setzen
     lea rdi, [patTempos]
     mov al, 5
     mov ecx, MAX_PATS
@@ -2183,7 +2270,6 @@ init_demo_patterns:
     mov ecx, MAX_PATS
     rep stosb
 
-    ; Demo-Patterns 00 und 01 sind 32 Zeilen lang (Break auf Zeile 31 = 0x1F)
     mov byte [patBreaks + 0], 31
     mov byte [patBreaks + 1], 31
 

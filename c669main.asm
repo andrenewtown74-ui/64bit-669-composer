@@ -12,6 +12,7 @@ global start
 %include "c669_audio.inc"
 %include "c669_io.inc"
 %include "c669_ui.inc"
+%include "c669_demo.inc"
 
 ; ============================================================================
 ; Zwischen Fenster- und Borderless-Fullscreen-Modus umschalten
@@ -229,7 +230,7 @@ WndProc:
     add rsp, 0x28
     xor eax, eax
     ret
-    
+
 .on_lbtn:
     sub rsp, 0x28
     mov ecx, r9d

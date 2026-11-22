@@ -5,12 +5,14 @@ CHAR_W          equ 12
 CHAR_H          equ 12
 WIN_W           equ 960
 WIN_H           equ 600
+DEMO_W          equ 320
+DEMO_H          equ 200
 
 ; Tracker-Datenmodell (128 Patterns x 64 Zeilen, 128 Orders, 64 Sample-Slots a 128 KB)
 MAX_PATS        equ 128
 PAT_ROWS        equ 64
 VIEW_ROWS       equ 32
-HELP_LINES      equ 29
+HELP_LINES      equ 30
 MAX_ORDERS      equ 128
 NUM_CH          equ 8
 MAX_SAMPS       equ 64
@@ -55,7 +57,6 @@ WM_CLOSE        equ 0x0010
 WM_KEYDOWN      equ 0x0100
 WM_SYSKEYDOWN   equ 0x0104
 WM_SYSCHAR      equ 0x0106
-
 WM_LBUTTONDOWN  equ 0x0201
 WM_RBUTTONDOWN  equ 0x0204
 WM_MOUSEWHEEL   equ 0x020A
@@ -146,6 +147,7 @@ extern SetTextColor
 extern ExtTextOutA
 extern BitBlt
 extern StretchBlt
+extern StretchDIBits
 extern SetStretchBltMode
 extern PatBlt
 
@@ -195,13 +197,17 @@ stLoopOff    db "LOOPOFF"
 stSynth      db "SYNTH  "
 stBreak      db "BREAK  "
 
-topBar    db " Composer 669 x64 Tracker        File: _4KSYNTH          Mode: PAT-LOOP        "
-botBar    db " Tmp:5 Oct:2 Ch:0 Pat:00 Row:00/3F Ins:00 Stp:1 [SPACE=Play Ctrl+B=Brk]   [?]  "
+topBar      db " Composer 669 x64 Tracker        File: _4KSYNTH          Mode: PAT-LOOP        "
+botBar      db " Tmp:5 Oct:2 Ch:0 Pat:00 Row:00/3F Ins:00 Stp:1 [SPACE=Play Ctrl+B=Brk] [D] [?]"
+demoTopBar  db "4K:PLASMA File:                  Ord:00 Pat:00 Row:00 Tmp:5  [TAB=FX ESC=Back] "
+demoBotBar  db " [TAB/Rad=Effekt] [Klick/ESC=Tracker] [R-Klick/SPACE=Play] [Strg+O=669] [FS]   "
+demoFxNames db "PLASMATUNNELRASTER"
+demoSep     db "   *** 669 x64 ***  "
 
 titleBox:
     db "  Composer 669 Live Tracker (x64)   "
     db "  QWERTZ=Piano  Pfeile/Tab  Del/BS  "
-    db " Ctrl+O/S:669 Ctrl+W:WAV Alt+Ent:FS "
+    db " Ctrl+O/S:669 Ctrl+W:WAV Ctrl+D:Demo"
 
 defSampNames:
     db "00 Kick Drum"
@@ -230,9 +236,36 @@ statLines:
     db "Inst: 00"
 
 align 4
-f_2pi_256 dd 0.024543693
-f_127     dd 127.0
-f_63_5    dd 63.5
+f_2pi_256   dd 0.024543693
+f_127       dd 127.0
+f_63_5      dd 63.5
+f_tun_scale dd 2560.0
+f_128_pi    dd 40.743665
+
+; Copper-Rasterbars: 8 Basisfarben (0x00RRGGBB) und 17-Zeilen-Glanzprofil
+align 4
+rasterCols:
+    dd 0x0000D0FF, 0x00FF20B8, 0x007838FF, 0x002078FF
+    dd 0x00FFA800, 0x0020E088, 0x00FF3848, 0x0068E8FF
+barCurve:
+    db 24, 52, 88, 128, 170, 210, 238, 255, 255, 255, 238, 210, 170, 128, 88, 52, 24
+barSpec:
+    db 0, 0, 0, 0, 0, 16, 48, 96, 130, 96, 48, 16, 0, 0, 0, 0, 0
+
+; BITMAPINFOHEADER fuer 320x200 32-Bit Top-Down DIB (4K-Demo-Framebuffer)
+align 4
+demoBmi:
+    dd 40
+    dd DEMO_W
+    dd -DEMO_H
+    dw 1
+    dw 32
+    dd 0
+    dd 0
+    dd 0
+    dd 0
+    dd 0
+    dd 0
 
 ; 12-TET Phaseninkremente fuer Oktave 2 (C-2 bis B-2 bei 44100 Hz)
 align 4
@@ -311,16 +344,18 @@ helpLines:
     HLINE "  F9 / F10        : Edit-Step (1,2,4,0) / Kanal Mute (On/Off)"
     HLINE "  Effekte (a..f)  : a:Up b:Down c:Porta d:Detune e:Vib f:Tempo"
     HLINE " "
-    HLINE " DATEIEN, SAMPLES, ANSICHT & MAUS"
+    HLINE " DATEIEN, SAMPLES, DEMO & MAUS"
     HLINE "  Strg+O / F11    : .669-Modul laden"
     HLINE "  Strg+S / F12    : .669-Modul speichern"
     HLINE "  Strg+W / Einfg  : WAV-Sample auf aktiven Slot laden"
     HLINE "  Strg+L / Strg+U : Sample-Loop umschalten / Slot auf Synth"
     HLINE "  Strg+B          : Pattern-Break auf Cursorzeile setzen"
+    HLINE "  Strg+D / [D]    : 4K-Demo (TAB: Plasma / 3D-Tunnel / Raster)"
     HLINE "  Alt+Ent / Strg+F: Vollbild (Fullscreen) umschalten"
     HLINE "  Maus / Rad      : Klick=Wahl/Vorschau, Fusszeile L=+/R=-"
     HLINE "----------------------------------------------------------------"
     HLINE "        Klick, ESC oder Strg+H schliesst diese Hilfe"
+
 ; ============================================================================
 ; Uninitialisierte Daten (nur alignb in .bss)
 ; ============================================================================
@@ -349,6 +384,12 @@ tmpInt        resd 1
 bytesIO       resd 1
 mousePt       resd 2
 showHelp      resd 1
+demoMode      resd 1
+demoFx        resd 1            ; 0=Plasma, 1=3D-Tunnel, 2=Rasterbars
+tunnelReady   resd 1
+demoTick      resd 1
+demoStarZ     resd 1
+demoScrollX   resd 1
 origNos       resd 1
 origNop       resd 1
 saveNos       resd 1
@@ -376,26 +417,26 @@ songMode      resd 1
 needPatTempo  resd 1
 curTempo      resd 1
 curOct        resd 1
-curInst       resd 1            ; 0..63
-sampViewTop   resd 1            ; 0..52
-patViewTop    resd 1            ; 0..32
-ordViewTop    resd 1            ; 0..116
+curInst       resd 1
+sampViewTop   resd 1
+patViewTop    resd 1
+ordViewTop    resd 1
 curVol        resd 1
 editStep      resd 1
 
-curPat        resd 1            ; 0..127
-editRow       resd 1            ; 0..63
-curCh         resd 1            ; 0..7
-curSubCol     resd 1            ; 0..5
+curPat        resd 1
+editRow       resd 1
+curCh         resd 1
+curSubCol     resd 1
 
-playOrder     resd 1            ; 0..127
-playPat       resd 1            ; 0..127
-playRow       resd 1            ; 0..63
-dispPlayOrder resd 1            ; Aktuell erklingende Order fuer Anzeige
-dispPlayPat   resd 1            ; Aktuell erklingendes Pattern fuer Anzeige
-dispPlayRow   resd 1            ; Aktuell erklingende Zeile fuer Anzeige
-orderLen      resd 1            ; 1..128
-loopOrder     resd 1            ; 0..127
+playOrder     resd 1
+playPat       resd 1
+playRow       resd 1
+dispPlayOrder resd 1
+dispPlayPat   resd 1
+dispPlayRow   resd 1
+orderLen      resd 1
+loopOrder     resd 1
 tickSamples   resd 1
 fxDivCnt      resd 1
 lfsr          resd 1
@@ -415,20 +456,26 @@ sampC2Step       resd MAX_SAMPS
 
 ; Song-Tabellen (128 Orders, 128 Pattern-Tempos, 128 Pattern-Breaks)
 alignb 16
-dxTbl         resd 80
-sinTbl        resd 256
-chMuted       resb NUM_CH
-orderList     resb MAX_ORDERS
-patTempos     resb MAX_PATS
-patBreaks     resb MAX_PATS
-voices        resb NUM_CH * VOICE_SIZE
+dxTbl          resd 80
+sinTbl         resd 256
+demoPal        resd 256
+demoScrollTxt  resb 128
+chMuted        resb NUM_CH
+orderList      resb MAX_ORDERS
+patTempos      resb MAX_PATS
+patBreaks      resb MAX_PATS
+voices         resb NUM_CH * VOICE_SIZE
 voiceTargetInc resd NUM_CH
-patterns      resb MAX_PATS * PAT_BYTES
-lineBuf       resb 32
-cellBuf       resb 16
+patterns       resb MAX_PATS * PAT_BYTES
+lineBuf        resb 32
+cellBuf        resb 16
 
 alignb 16
-waveHdrs      resb BUF_COUNT * 48
-audioBufs     resb BUF_COUNT * BUF_BYTES
-pcmSlots      resb MAX_SAMPS * MAX_SAMP_BYTES
-fileBuf       resb FILE_BUF_SIZE
+waveHdrs       resb BUF_COUNT * 48
+audioBufs      resb BUF_COUNT * BUF_BYTES
+demoFb         resd DEMO_W * DEMO_H
+tunnelDist     resb DEMO_W * DEMO_H
+tunnelAngle    resb DEMO_W * DEMO_H
+tunnelFog      resb DEMO_W * DEMO_H
+pcmSlots       resb MAX_SAMPS * MAX_SAMP_BYTES
+fileBuf        resb FILE_BUF_SIZE
