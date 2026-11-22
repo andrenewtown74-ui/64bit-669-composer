@@ -408,19 +408,20 @@ start:
     mov rdx, rax
     call SelectObject
 
-    mov ecx, -11
-    mov edx, 9
+; DOS-Rasterfont "Terminal" (8x12 Pixel, OEM-Zeichensatz, nicht fett)
+    mov ecx, 12                         ; Zellenhoehe passend zu CHAR_H = 12
+    mov edx, 8                          ; Native Zeichenbreite (0 = automatisch)
     xor r8d, r8d
     xor r9d, r9d
-    mov qword [rsp + 0x20], 700
+    mov qword [rsp + 0x20], 400         ; FW_NORMAL statt 700 (kein GDI-Fett-Schmieren)
     mov qword [rsp + 0x28], 0
     mov qword [rsp + 0x30], 0
     mov qword [rsp + 0x38], 0
-    mov qword [rsp + 0x40], 0
+    mov qword [rsp + 0x40], 255         ; OEM_CHARSET fuer echten Terminal-Font
     mov qword [rsp + 0x48], 0
     mov qword [rsp + 0x50], 0
-    mov qword [rsp + 0x58], 3
-    mov qword [rsp + 0x60], 49
+    mov qword [rsp + 0x58], 3           ; NONANTIALIASED_QUALITY
+    mov qword [rsp + 0x60], 49          ; FIXED_PITCH | FF_MODERN
     lea rax, [fontName]
     mov [rsp + 0x68], rax
     call CreateFontA

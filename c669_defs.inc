@@ -191,7 +191,7 @@ section .data
 
 clsName      db "C669TrackerCls", 0
 winTitle     db "Composer 669 x64 Tracker", 0
-fontName     db "Consolas", 0
+fontName     db "Terminal", 0
 hexTbl       db "0123456789ABCDEF"
 noteNames    db "C C#D D#E F F#G G#A A#B "
 txtOn        db "On "
