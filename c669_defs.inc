@@ -12,7 +12,7 @@ DEMO_H          equ 200
 MAX_PATS        equ 128
 PAT_ROWS        equ 64
 VIEW_ROWS       equ 32
-HELP_LINES      equ 34
+HELP_LINES      equ 35
 MAX_ORDERS      equ 128
 NUM_CH          equ 8
 MAX_SAMPS       equ 64
@@ -161,6 +161,14 @@ extern waveOutPrepareHeader
 extern waveOutWrite
 extern waveOutReset
 extern waveOutClose
+extern waveInOpen
+extern waveInPrepareHeader
+extern waveInUnprepareHeader
+extern waveInAddBuffer
+extern waveInStart
+extern waveInStop
+extern waveInReset
+extern waveInClose
 
 ; comdlg32.dll
 extern GetOpenFileNameA
@@ -180,6 +188,9 @@ txtOn        db "On "
 txtOff       db "Off"
 txtEmptySlot db " (leer)   "
 txtNewFile   db "_NEUER_SONG     "
+txtRecName   db "REC 00 22kHz"
+txtMinus     db "[-]"
+txtPlus      db "[+]"
 
 flt669       db "Composer 669 (*.669)", 0, "*.669", 0, "Alle Dateien (*.*)", 0, "*.*", 0, 0
 defExt       db "669", 0
@@ -220,19 +231,96 @@ stPsCh       db "CH PAST"
 stCpPat      db "PAT CPY"
 stPsPat      db "PAT PST"
 stNoClip     db "NO CLIP"
+stRecOn      db "REC... "
+stRecOk      db "REC OK "
+stRecErr     db "REC ERR"
+stSynOk      db "SYN OK "
+stFxNorm     db "NORM OK"
+stFxFi       db "FADE IN"
+stFxFo       db "FADEOUT"
+stFxRev      db "REVERSE"
+stFxBst      db "BOOST +"
+stFxHlf      db "HALFLEN"
+stFxTrm      db "TRIM OK"
 
 topBar      db " Composer 669 x64 Tracker        File: _4KSYNTH          Mode: PAT-LOOP        "
 clrBar      db " Loeschen: [Akt.Pat] [Alle Pat] [Alle Inst] [Alles/Neu] [SpC] [SpV] [PtC] [PtV] "
-botBar      db " Tmp:5 Oct:2 Ch:0 Pat:00 Row:00/3F Ins:00 Stp:1 [SPACE=Play Ctrl+B=Brk] [D] [?]"
+botBar      db " Tmp:5 Oct:2 Ch:0 Pat:00 Row:00/3F Ins:00 Stp:1 [SPACE=Play] [Brk] [I] [D] [?]  "
 demoTopBar  db "4K:PLASMA File:                  Ord:00 Pat:00 Row:00 Tmp:5  [TAB=FX ESC=Back] "
 demoBotBar  db " [TAB/Rad=Effekt] [Klick/ESC=Tracker] [R-Klick/SPACE=Play] [Strg+O=669] [FS]   "
 demoFxNames db "PLASMATUNNELRASTER"
 demoSep     db "   *** 669 x64 ***  "
 
+; Texte und Layouts fuer den Sample- und Instrument-Editor
+seTopBar    db " SAMPLE-EDITOR  Slot:00              Len:00000  Loop:OFF  [ESC=Tracker]        "
+seInfoBar   db " Sel:00000-00000  Loop:00000-FFFFF   [L=SelStart R=SelEnde Shift+L/R=Loop]     "
+seActBar    db " [WAV Laden] [REC Start] [Vorhoeren] [StopTon] [Loop:ON] [Sel->Lp] [Trim] [Syn]"
+seFxBar     db " FX: [Normalis] [Fade In] [FadeOut] [Reverse] [Boost +] [HalbLen] [SelAll]     "
+seSynthHdr  db " SYNTHESIZER / INSTRUMENT-DESIGNER (ADSR, Wellenform, Sweep & Filter -> PCM)  "
+seWaveBar   db "   Welle: [0:Sinus] [1:Saege] [2:Puls ] [3:Dreie] [4:Rausc]                    "
+sePulseTxt  db "Pulsbreite: 50% "
+sePresetBar db "   Presets: [808Kick] [Snare  ] [AcidSaw] [ChipSqr] [SoftPad] [LaserFX]        "
+seRenderBar db "   [ SYNTH -> SLOT RENDERN  ]  [ SYNTH + AUTO-LOOP PAD ]  [ Slot - / Slot + ]  "
+seRecBanner db "   *** AUFNAHME LAEUFT (22050 Hz, 8-Bit Mono) - [REC Stop!] zum Beenden ***   "
+seKeyHint   db " QWERTZ-Klaviatur (Y..M / Q..I): Aktiven Slot live spielen | Mausrad: Slot    "
+seBotBar    db " Slot:00  Oct:2  [SPACE=Play Song]  [Strg+E / ESC = Zurueck Tracker]       [?] "
+seEmptyMsg  db " Slot nutzt internen Synth / leer - WAV laden, REC oder SYNTH nutzen"
+
+txtRecBtnOn  db "[REC Start]"
+txtRecBtnOff db "[REC Stop!]"
+txtLpBtnOn   db "[Loop:ON]"
+txtLpBtnOff  db "[LoopOFF]"
+
+; Startspalte und Breite der 7 Effekt-Buttons in Zeile 24
+seFxBtnPos:
+    db  5, 10
+    db 16,  9
+    db 26,  9
+    db 36,  9
+    db 46,  9
+    db 56,  9
+    db 66,  8
+
+seParamNames:
+    db "Attack    "
+    db "Decay     "
+    db "Sustain   "
+    db "Release   "
+    db "Dauer     "
+    db "Sweep     "
+    db "Detune/Cho"
+    db "Filter LP "
+
+seParamHints:
+    db "Einschwing "
+    db "Abfallzeit "
+    db "Haltepegel "
+    db "Ausklingen "
+    db "0.1..2.0 s "
+    db "<50Dn >50Up"
+    db "2.Oszillat."
+    db "Tiefpass   "
+
+seWaveSlotNames:
+    db "SYN Sinus   "
+    db "SYN Saege   "
+    db "SYN Puls    "
+    db "SYN Dreieck "
+    db "SYN Rauschen"
+
+; 6 Synth-Presets: Wave, Pulse, A, D, S, R, Dur, Sweep, Detune, Filter, AutoLoop
+sePresets:
+    db 0, 50,  0, 28,  0, 20, 18,  8,  0, 80, 0   ; 808Kick
+    db 4, 50,  0, 32,  0, 18, 14, 35,  0, 75, 0   ; Snare
+    db 1, 50,  2, 40, 45, 15, 35, 50, 20, 55, 0   ; AcidSaw
+    db 2, 25,  0, 20, 70, 10, 30, 50, 10, 95, 1   ; ChipSqr
+    db 3, 50, 35, 25, 80, 40, 75, 50, 35, 65, 1   ; SoftPad
+    db 1, 50,  0, 45, 10, 20, 25,  5,  0, 90, 0   ; LaserFX
+
 titleBox:
     db "  Composer 669 Live Tracker (x64)   "
     db "  QWERTZ=Piano  Pfeile/Tab  Del/BS  "
-    db " Ctrl+O/S:669 Ctrl+W:WAV Ctrl+D:Demo"
+    db " Ctrl+O/S:669 Ctrl+E:Inst Ctrl+D:4K "
 
 defSampNames:
     db "00 Kick Drum"
@@ -333,6 +421,7 @@ demoLead:
     db 28, 0xFF, 31, 0xFF, 28, 24, 28, 31
     db 26, 0xFF, 31, 0xFF, 35, 0xFF, 31, 0xFF
 
+; Ausgabeformat: 44100 Hz, 16-Bit Stereo
 align 2
 wfx:
     dw 1
@@ -341,6 +430,17 @@ wfx:
     dd SAMPLE_RATE * 4
     dw 4
     dw 16
+    dw 0
+
+; Aufnahmeformat: 22050 Hz, 8-Bit Mono (direkt passend fuer 8-Bit-PCM-Slots)
+align 2
+wfxRec:
+    dw 1
+    dw 1
+    dd 22050
+    dd 22050
+    dw 1
+    dw 8
     dw 0
 
 ; Makro fuer exakt 64 Zeichen breite Hilfezeilen
@@ -371,10 +471,11 @@ helpLines:
     HLINE "  F9 / F10        : Edit-Step (1,2,4,0) / Kanal Mute (On/Off)"
     HLINE "  Effekte (a..f)  : a:Up b:Down c:Porta d:Detune e:Vib f:Tempo"
     HLINE " "
-    HLINE " DATEIEN, SAMPLES, LOESCHEN & DEMO"
+    HLINE " DATEIEN, SAMPLE-EDITOR, LOESCHEN & DEMO"
     HLINE "  Strg+O / F11    : .669-Modul laden"
     HLINE "  Strg+S / F12    : .669-Modul speichern"
     HLINE "  Strg+W / Einfg  : WAV-Sample auf aktiven Slot laden"
+    HLINE "  Strg+E / [I]    : Sample- & Instrument-Editor (REC/FX/ADSR)"
     HLINE "  Strg+L / Strg+U : Sample-Loop umschalten / Slot auf Synth"
     HLINE "  Strg+B          : Pattern-Break auf Cursorzeile setzen"
     HLINE "  Strg+Entf / +N  : Akt. Pattern leeren / Alles leer (Neu)"
@@ -396,6 +497,7 @@ hWnd        resq 1
 hDC         resq 1
 memDC       resq 1
 hWaveOut    resq 1
+hWaveIn     resq 1
 wndClass    resb 72
 winRect     resd 4
 savedRect   resd 4
@@ -412,9 +514,11 @@ lastDraw      resd 1
 tmpInt        resd 1
 bytesIO       resd 1
 mousePt       resd 2
+mousePxX      resd 1
 showHelp      resd 1
 demoMode      resd 1
-demoFx        resd 1            ; 0=Plasma, 1=3D-Tunnel, 2=Rasterbars
+sampEdMode    resd 1
+demoFx        resd 1
 tunnelReady   resd 1
 demoTick      resd 1
 demoStarZ     resd 1
@@ -423,6 +527,18 @@ origNos       resd 1
 origNop       resd 1
 saveNos       resd 1
 saveNop       resd 1
+
+; Sample-Editor & ADSR-Synth-Zustand
+isRecording   resd 1
+recStartTick  resd 1
+seLastSlot    resd 1
+seLastLen     resd 1
+seSelStart    resd 1
+seSelEnd      resd 1
+seWave        resd 1
+sePulse       resd 1
+seSynthLfsr   resd 1
+seParams      resd 8            ; Attack, Decay, Sustain, Release, Dauer, Sweep, Detune, Filter
 
 ; Zwischenablage-Status fuer Spur und Pattern
 clipChValid   resd 1
@@ -510,6 +626,8 @@ cellBuf        resb 16
 alignb 16
 waveHdrs       resb BUF_COUNT * 48
 audioBufs      resb BUF_COUNT * BUF_BYTES
+recHdr         resb 48
+recBuf         resb MAX_SAMP_BYTES
 demoFb         resd DEMO_W * DEMO_H
 tunnelDist     resb DEMO_W * DEMO_H
 tunnelAngle    resb DEMO_W * DEMO_H

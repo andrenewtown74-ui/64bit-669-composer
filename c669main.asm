@@ -1,5 +1,5 @@
 ; 64-Bit Windows Composer-669-Tracker (Modularer Aufbau, NASM ohne CRT)
-; 64 Sample-Slots (00..3F) + WAV/.669 I/O + Borderless Fullscreen (Alt+Enter / Strg+F)
+; 64 Sample-Slots (00..3F) + WAV/.669 I/O + Sample-/Synth-Editor + 4K-Demo + Fullscreen
 
 default rel
 bits 64
@@ -13,6 +13,7 @@ global start
 %include "c669_io.inc"
 %include "c669_ui.inc"
 %include "c669_demo.inc"
+%include "c669_samped.inc"
 
 ; ============================================================================
 ; Zwischen Fenster- und Borderless-Fullscreen-Modus umschalten
@@ -28,22 +29,20 @@ toggle_fullscreen:
     cmp dword [isFullscreen], 0
     jne .to_windowed
 
-    ; Fensterposition vor Wechsel sichern
     mov rcx, [hWnd]
     lea rdx, [savedRect]
     call GetWindowRect
 
-    xor ecx, ecx                        ; SM_CXSCREEN
+    xor ecx, ecx
     call GetSystemMetrics
     mov [scrW], eax
     mov r12d, eax
 
-    mov ecx, 1                          ; SM_CYSCREEN
+    mov ecx, 1
     call GetSystemMetrics
     mov [scrH], eax
     mov r13d, eax
 
-    ; Stil auf rahmenloses Vollbild setzen
     mov rcx, [hWnd]
     mov edx, GWL_STYLE
     mov r8d, WS_POPUP_VIS
@@ -58,7 +57,6 @@ toggle_fullscreen:
     mov qword [rsp + 0x30], SWP_FRAMECHANGED
     call SetWindowPos
 
-    ; 16:10-Seitenverhaeltnis (960x600) innerhalb scrW x scrH berechnen
     mov eax, r12d
     imul eax, WIN_H
     mov edx, r13d
@@ -66,7 +64,6 @@ toggle_fullscreen:
     cmp eax, edx
     jb .fs_fit_w
 
-    ; Hoehenbegrenzt (Pillarbox links/rechts bei 16:9)
     mov [dispH], r13d
     mov eax, r13d
     imul eax, WIN_W
@@ -82,7 +79,6 @@ toggle_fullscreen:
     jmp .fs_flag_on
 
 .fs_fit_w:
-    ; Breitenbegrenzt (Letterbox oben/unten)
     mov [dispW], r12d
     mov eax, r12d
     imul eax, WIN_H
@@ -114,8 +110,6 @@ toggle_fullscreen:
     sub edx, r9d
 
     mov rcx, [hWnd]
-    xor ecx, ecx
-    mov rcx, [hWnd]
     push rdx
     xor edx, edx
     pop r10
@@ -131,7 +125,6 @@ toggle_fullscreen:
     mov dword [isFullscreen], 0
 
 .rebind_dc:
-    ; DC neu anfordern, damit der Clipping-Bereich zur neuen Groesse passt
     mov rcx, [hWnd]
     mov rdx, [hDC]
     call ReleaseDC
@@ -166,7 +159,7 @@ toggle_fullscreen:
     ret
 
 ; ============================================================================
-; Fensterprozedur (x64 ABI konform, inkl. Alt+Enter Fullscreen)
+; Fensterprozedur (x64 ABI konform, inkl. Maus und Alt+Enter Fullscreen)
 ; ============================================================================
 WndProc:
     cmp edx, WM_KEYDOWN
@@ -198,9 +191,9 @@ WndProc:
 .on_syskey:
     cmp r8d, VK_RETURN
     jne .fwd_def
-    test r9d, 0x20000000                ; Alt-Taste gedrueckt?
+    test r9d, 0x20000000
     jz .fwd_def
-    test r9d, 0x40000000                ; Auto-Repeat ignorieren
+    test r9d, 0x40000000
     jnz .eat_msg
     sub rsp, 0x28
     call toggle_fullscreen
@@ -209,7 +202,7 @@ WndProc:
     ret
 
 .on_syschar:
-    cmp r8d, VK_RETURN                  ; Windows-Warnton bei Alt+Enter unterdruecken
+    cmp r8d, VK_RETURN
     je .eat_msg
 .fwd_def:
     sub rsp, 0x28
@@ -260,6 +253,7 @@ WndProc:
     add rsp, 0x28
     xor eax, eax
     ret
+
 ; ============================================================================
 ; Programmeinstieg
 ; ============================================================================
@@ -297,6 +291,7 @@ start:
     jb .s_loop
 
     call init_samp_meta
+    call init_samped_defaults
     call init_demo_patterns
 
     xor ebx, ebx
@@ -469,6 +464,7 @@ main_loop:
     je .exit_prog
 
     call pump_audio
+    call poll_recording
 
     call GetTickCount
     mov ecx, eax
@@ -488,6 +484,7 @@ main_loop:
     jmp main_loop
 
 .exit_prog:
+    call stop_recording
     mov rcx, [hWaveOut]
     call waveOutReset
     mov rcx, [hWaveOut]

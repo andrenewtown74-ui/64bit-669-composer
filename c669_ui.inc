@@ -1,4 +1,4 @@
-; GDI-Darstellung, scrollende 64-Zeilen/128-Order/64-Sample-Ansicht, Tastatur-, Maus-, Copy/Paste-, Loesch-, Hilfe- und Demo-UI
+; GDI-Darstellung, scrollende 64-Zeilen/128-Order/64-Sample-Ansicht, Tastatur-, Maus-, Copy/Paste-, Loesch-, Hilfe-, Sample-Editor- und Demo-UI
 
 ; Byte AL als 2 Hex-Zeichen nach [R8] schreiben
 fmt_hex2:
@@ -206,6 +206,12 @@ vk_to_hex:
 
 ; 4K-Demo-Modus umschalten (startet Wiedergabe automatisch, falls pausiert)
 toggle_demo_mode:
+    sub rsp, 0x28
+    cmp dword [sampEdMode], 0
+    je .tdm_flip
+    call stop_recording
+    mov dword [sampEdMode], 0
+.tdm_flip:
     xor dword [demoMode], 1
     cmp dword [demoMode], 0
     je .tdm_done
@@ -222,6 +228,25 @@ toggle_demo_mode:
     mov dword [needPatTempo], 0
     mov dword [tickSamples], 1
 .tdm_done:
+    add rsp, 0x28
+    ret
+
+; Sample- und Instrument-Editor umschalten (Strg+E oder Button [I])
+toggle_samped_mode:
+    sub rsp, 0x28
+    cmp dword [sampEdMode], 0
+    je .tse_open
+    call stop_recording
+    mov dword [sampEdMode], 0
+    jmp .tse_done
+.tse_open:
+    mov dword [demoMode], 0
+    mov dword [showHelp], 0
+    mov dword [sampEdMode], 1
+    call samped_sync_sel
+.tse_done:
+    mov dword [dirty], 1
+    add rsp, 0x28
     ret
 
 ; ============================================================================
@@ -412,7 +437,7 @@ handle_keydown:
     jmp .k_done
 .kd_norm:
 
-    ; Strg-Kombinationen inkl. Copy/Paste (C/V, Shift+C/V) und Loeschfunktionen
+    ; Strg-Kombinationen inkl. Sample-Editor (E), Copy/Paste und Loeschfunktionen
     mov ecx, VK_CONTROL
     call GetKeyState
     test ax, 0x8000
@@ -423,6 +448,8 @@ handle_keydown:
     je .do_save
     cmp ebx, 'W'
     je .do_wav
+    cmp ebx, 'E'
+    je .do_samped
     cmp ebx, 'L'
     je .do_loop
     cmp ebx, 'U'
@@ -454,6 +481,8 @@ handle_keydown:
     jnz .k_done
     cmp dword [demoMode], 0
     jne .k_done
+    cmp dword [sampEdMode], 0
+    jne .k_done
     mov ecx, VK_SHIFT
     call GetKeyState
     test ax, 0x8000
@@ -468,6 +497,8 @@ handle_keydown:
     test esi, 0x40000000
     jnz .k_done
     cmp dword [demoMode], 0
+    jne .k_done
+    cmp dword [sampEdMode], 0
     jne .k_done
     mov ecx, VK_SHIFT
     call GetKeyState
@@ -505,19 +536,30 @@ handle_keydown:
 .do_load:
     test esi, 0x40000000
     jnz .k_done
+    call stop_recording
     call load_669_dialog
+    mov dword [seLastSlot], -1
     jmp .k_done
 
 .do_save:
     test esi, 0x40000000
     jnz .k_done
+    call stop_recording
     call save_669_dialog
     jmp .k_done
 
 .do_wav:
     test esi, 0x40000000
     jnz .k_done
+    call stop_recording
     call load_wav_dialog
+    mov dword [seLastSlot], -1
+    jmp .k_done
+
+.do_samped:
+    test esi, 0x40000000
+    jnz .k_done
+    call toggle_samped_mode
     jmp .k_done
 
 .do_loop:
@@ -529,7 +571,9 @@ handle_keydown:
 .do_unload:
     test esi, 0x40000000
     jnz .k_done
+    call stop_recording
     call unload_wav_slot
+    mov dword [seLastSlot], -1
     jmp .k_done
 
 .do_fs:
@@ -539,6 +583,8 @@ handle_keydown:
     jmp .k_done
 
 .do_break:
+    cmp dword [sampEdMode], 0
+    jne .k_done
     mov eax, [curPat]
     and eax, 127
     mov ecx, [editRow]
@@ -577,18 +623,28 @@ handle_keydown:
 .do_clr_inst:
     test esi, 0x40000000
     jnz .k_done
+    call stop_recording
     call clear_all_instruments
+    mov dword [seLastSlot], -1
     jmp .k_done
 
 .do_clr_all:
     test esi, 0x40000000
     jnz .k_done
+    call stop_recording
     call clear_all_song
+    mov dword [seLastSlot], -1
     jmp .k_done
 
 .chk_esc:
     cmp ebx, VK_ESCAPE
     jne .chk_space
+    cmp dword [sampEdMode], 0
+    je .esc_chk_demo
+    call stop_recording
+    mov dword [sampEdMode], 0
+    jmp .k_done
+.esc_chk_demo:
     cmp dword [demoMode], 0
     je .esc_quit
     mov dword [demoMode], 0
@@ -648,8 +704,17 @@ handle_keydown:
 
 .chk_f6:
     cmp ebx, VK_F6
-    jne .chk_demo_guard
+    jne .chk_samped_fwd
     xor dword [songMode], 1
+    jmp .k_done
+
+.chk_samped_fwd:
+    ; Im Sample-Editor alle weiteren Tasten (F1..F4, QWERTZ-Piano) direkt weiterleiten
+    cmp dword [sampEdMode], 0
+    je .chk_demo_guard
+    mov ecx, ebx
+    mov edx, esi
+    call samped_keydown
     jmp .k_done
 
 .chk_demo_guard:
@@ -1048,7 +1113,7 @@ handle_keydown:
     ret
 
 ; ============================================================================
-; Client-Koordinaten (ECX=x, EDX=y) in 80x50-Raster umrechnen (Fenster und Fullscreen)
+; Client-Koordinaten (ECX=x, EDX=y) in 80x50-Raster + mousePxX (0..959) umrechnen
 ; ============================================================================
 mouse_to_grid:
     mov r9d, edx
@@ -1088,6 +1153,8 @@ mouse_to_grid:
     jae .mtg_out
 
 .mtg_div:
+    mov [mousePxX], ecx                 ; Virtuelle Pixel-X-Koordinate fuer Wellenform-Klicks
+
     mov eax, ecx
     xor edx, edx
     mov r8d, CHAR_W
@@ -1143,6 +1210,16 @@ handle_mouse_down:
     mov r12d, eax
     mov r13d, edx
 
+    ; Bei aktivem Sample-Editor Klick an samped_mouse_down weiterleiten
+    cmp dword [sampEdMode], 0
+    je .md_tracker
+    mov ecx, r12d
+    mov edx, r13d
+    mov r8d, ebx
+    call samped_mouse_down
+    jmp .md_done
+
+.md_tracker:
     ; Kopfzeile (Zeile 0): Mode PAT-LOOP / SONG-ORD umschalten
     test r13d, r13d
     jnz .md_chk_upper
@@ -1339,6 +1416,7 @@ handle_mouse_down:
     cmp r12d, 42
     ja .md_clr_all
     call clear_all_instruments
+    mov dword [seLastSlot], -1
     jmp .md_done
 
 .md_clr_all:
@@ -1347,6 +1425,7 @@ handle_mouse_down:
     cmp r12d, 54
     ja .md_btn_spc
     call clear_all_song
+    mov dword [seLastSlot], -1
     jmp .md_done
 
 .md_btn_spc:
@@ -1382,23 +1461,34 @@ handle_mouse_down:
     jmp .md_done
 
 .md_chk_bot:
-    ; Fusszeile (Zeile 49): Werte (L=+/R=-), Play, Break, Demo [D] und Hilfe [?]
+    ; Fusszeile (Zeile 49): Werte (L=+/R=-), Play, Brk, [I], [D] und [?]
     cmp r13d, 49
     jne .md_done
 
-    cmp r12d, 76
+    ; Hilfe [?] (Spalten 75..77)
+    cmp r12d, 75
     jb .md_bot_demo
-    cmp r12d, 78
+    cmp r12d, 77
     ja .md_done
     xor dword [showHelp], 1
     jmp .md_done
 
 .md_bot_demo:
-    cmp r12d, 72
-    jb .md_bot_tmp
-    cmp r12d, 74
+    ; Demo [D] (Spalten 71..73)
+    cmp r12d, 71
+    jb .md_bot_samped
+    cmp r12d, 73
     ja .md_done
     call toggle_demo_mode
+    jmp .md_done
+
+.md_bot_samped:
+    ; Instrument- / Sample-Editor [I] (Spalten 67..69)
+    cmp r12d, 67
+    jb .md_bot_tmp
+    cmp r12d, 69
+    ja .md_done
+    call toggle_samped_mode
     jmp .md_done
 
 .md_bot_tmp:
@@ -1529,15 +1619,16 @@ handle_mouse_down:
     jmp .md_done
 
 .md_bot_btns:
+    ; [SPACE=Play] (48..59) und [Brk] (61..65)
     test ebx, ebx
     jnz .md_done
     cmp r12d, 48
     jb .md_done
-    cmp r12d, 58
+    cmp r12d, 59
     jbe .md_toggle_play
-    cmp r12d, 60
+    cmp r12d, 61
     jb .md_done
-    cmp r12d, 70
+    cmp r12d, 65
     ja .md_done
 
     mov eax, [curPat]
@@ -1585,7 +1676,28 @@ handle_mouse_wheel:
     cmp dword [showHelp], 0
     jne .mw_done
 
-    ; Im Demo-Modus wechselt das Mausrad ebenfalls den Effekt
+    ; Im Sample-Editor wechselt das Mausrad den aktiven Sample-Slot (00..3F)
+    cmp dword [sampEdMode], 0
+    je .mw_chk_demo
+    mov eax, ecx
+    sar eax, 16
+    test eax, eax
+    jz .mw_done
+    mov edx, [curInst]
+    js .mw_se_next
+    dec edx
+    jmp .mw_se_st
+.mw_se_next:
+    inc edx
+.mw_se_st:
+    and edx, MAX_SAMPS - 1
+    mov [curInst], edx
+    call sync_samp_scroll
+    call samped_sync_sel
+    jmp .mw_done
+
+.mw_chk_demo:
+    ; Im Demo-Modus wechselt das Mausrad den Effekt
     cmp dword [demoMode], 0
     je .mw_norm
     mov eax, ecx
@@ -1747,28 +1859,28 @@ format_cell_text:
     ret
 
 ; ============================================================================
-; Hilfe-Overlay mittig in memDC zeichnen (Spalten 7..72, Zeilen 6..41)
+; Hilfe-Overlay mittig in memDC zeichnen (Spalten 7..72, Zeilen 5..41, 35 Zeilen)
 ; ============================================================================
 draw_help_overlay:
     push rbx
     sub rsp, 0x20
 
     mov ecx, 7 * CHAR_W
-    mov edx, 6 * CHAR_H
+    mov edx, 5 * CHAR_H
     mov r8d, 66 * CHAR_W
-    mov r9d, 36 * CHAR_H
+    mov r9d, 37 * CHAR_H
     mov r10d, COL_HDR_ON
     call fill_rect
 
     mov ecx, 7 * CHAR_W + 3
-    mov edx, 6 * CHAR_H + 3
+    mov edx, 5 * CHAR_H + 3
     mov r8d, 66 * CHAR_W - 6
-    mov r9d, 36 * CHAR_H - 6
+    mov r9d, 37 * CHAR_H - 6
     mov r10d, COL_BLACK
     call fill_rect
 
     mov ecx, 8 * CHAR_W
-    mov edx, 7 * CHAR_H
+    mov edx, 6 * CHAR_H
     mov r8d, 64 * CHAR_W
     mov r9d, CHAR_H
     mov r10d, COL_PURP
@@ -1784,7 +1896,7 @@ draw_help_overlay:
 .hl_c1:
     cmp ebx, 1
     je .hl_teal
-    cmp ebx, 32
+    cmp ebx, 33
     je .hl_teal
     cmp ebx, 2
     je .hl_purp
@@ -1792,7 +1904,7 @@ draw_help_overlay:
     je .hl_purp
     cmp ebx, 21
     je .hl_purp
-    cmp ebx, 33
+    cmp ebx, 34
     jne .hl_draw
     mov r10d, COL_CYAN
     jmp .hl_draw
@@ -1808,7 +1920,7 @@ draw_help_overlay:
     lea r8, [helpLines]
     add r8, rax
     mov ecx, 8
-    lea edx, [rbx + 7]
+    lea edx, [rbx + 6]
     mov r9d, 64
     call draw_text
 
@@ -1821,7 +1933,7 @@ draw_help_overlay:
     ret
 
 ; ============================================================================
-; Gesamte Composer-669-Oberflaeche oder 4K-Demo in memDC zeichnen und blitten
+; Tracker, Sample-Editor oder 4K-Demo in memDC zeichnen und blitten
 ; Lokale Stack-Slots: [rsp + 0x58] = curDrawRow (0..63), [rsp + 0x5C] = curPatBrk
 ; ============================================================================
 draw_screen:
@@ -1841,11 +1953,20 @@ draw_screen:
 .ds_no_follow:
 
     cmp dword [demoMode], 0
-    je .ds_tracker
+    je .ds_chk_samped
     call draw_demo_frame
     jmp .ds_output
-.ds_tracker:
 
+.ds_chk_samped:
+    cmp dword [sampEdMode], 0
+    je .ds_tracker
+    call draw_samped_screen
+    cmp dword [showHelp], 0
+    je .ds_output
+    call draw_help_overlay
+    jmp .ds_output
+
+.ds_tracker:
     xor ecx, ecx
     xor edx, edx
     mov r8d, WIN_W
@@ -2547,23 +2668,38 @@ draw_screen:
     mov r10d, COL_CYAN
     call draw_text
 
-    ; Demo-Schaltflaeche [D] (Spalten 72..74) hervorheben
-    mov ecx, 72 * CHAR_W
+    ; Sample-/Instrument-Editor-Schaltflaeche [I] (Spalten 67..69)
+    mov ecx, 67 * CHAR_W
+    mov edx, 49 * CHAR_H
+    mov r8d, 3 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_PURPHI
+    call fill_rect
+
+    mov ecx, 67
+    mov edx, 49
+    lea r8, [botBar + 67]
+    mov r9d, 3
+    mov r10d, COL_BLACK
+    call draw_text
+
+    ; Demo-Schaltflaeche [D] (Spalten 71..73)
+    mov ecx, 71 * CHAR_W
     mov edx, 49 * CHAR_H
     mov r8d, 3 * CHAR_W
     mov r9d, CHAR_H
     mov r10d, COL_HDR_ON
     call fill_rect
 
-    mov ecx, 72
+    mov ecx, 71
     mov edx, 49
-    lea r8, [botBar + 72]
+    lea r8, [botBar + 71]
     mov r9d, 3
     mov r10d, COL_WHITE
     call draw_text
 
-    ; Hilfe-Schaltflaeche [?] (Spalten 76..78) hervorheben
-    mov ecx, 76 * CHAR_W
+    ; Hilfe-Schaltflaeche [?] (Spalten 75..77)
+    mov ecx, 75 * CHAR_W
     mov edx, 49 * CHAR_H
     mov r8d, 3 * CHAR_W
     mov r9d, CHAR_H
@@ -2574,9 +2710,9 @@ draw_screen:
 .q_bg:
     call fill_rect
 
-    mov ecx, 76
+    mov ecx, 75
     mov edx, 49
-    lea r8, [botBar + 76]
+    lea r8, [botBar + 75]
     mov r9d, 3
     mov r10d, COL_WHITE
     call draw_text
