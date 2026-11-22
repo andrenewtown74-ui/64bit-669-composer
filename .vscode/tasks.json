@@ -1,0 +1,19 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build & Run aktuelle ASM-Datei (lokal)",
+      "type": "shell",
+      "command": ".\\nasm.exe -f win64 \"${fileBasenameNoExtension}.asm\" -o \"${fileBasenameNoExtension}.obj\"; if ($?) { .\\GoLink.exe /entry start /fo \"${fileBasenameNoExtension}.exe\" \"${fileBasenameNoExtension}.obj\" kernel32.dll user32.dll gdi32.dll winmm.dll comdlg32.dll }; if ($?) { (Get-Item \"${fileBasenameNoExtension}.exe\").Length; & \".\\${fileBasenameNoExtension}.exe\" }",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    }
+  ]
+}

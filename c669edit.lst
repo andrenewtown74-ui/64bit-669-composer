@@ -1,0 +1,2430 @@
+     1                                  ; 64-Bit Windows Composer-669-Tracker (NASM, ohne CRT)
+     2                                  ; Echtzeit-8-Kanal-Stereo-Mixer (WinMM Streaming) + Vollstaendiger Pattern-Editor
+     3                                  ; Kompatibel mit lokaler Toolchain (nasm.exe + GoLink.exe)
+     4                                  
+     5                                  default rel
+     6                                  bits 64
+     7                                  
+     8                                  ; Raster- und Fensterkonstanten (80x50 Zeichen a 12x12 Pixel)
+     9                                  CHAR_W          equ 12
+    10                                  CHAR_H          equ 12
+    11                                  WIN_W           equ 960
+    12                                  WIN_H           equ 600
+    13                                  
+    14                                  ; Tracker-Datenmodell
+    15                                  MAX_PATS        equ 16
+    16                                  PAT_ROWS        equ 32
+    17                                  NUM_CH          equ 8
+    18                                  CELL_SIZE       equ 4                   ; Byte 0=Note, 1=Inst, 2=Vol, 3=FX
+    19                                  ROW_BYTES       equ NUM_CH * CELL_SIZE  ; 32 Byte pro Zeile
+    20                                  PAT_BYTES       equ PAT_ROWS * ROW_BYTES; 1024 Byte pro Pattern
+    21                                  VOICE_SIZE      equ 64
+    22                                  
+    23                                  ; Echtzeit-Audio-Streaming (44100 Hz, 16-Bit Stereo, 4 Puffer a 512 Frames)
+    24                                  SAMPLE_RATE     equ 44100
+    25                                  BUF_COUNT       equ 4
+    26                                  BUF_FRAMES      equ 512
+    27                                  BUF_BYTES       equ BUF_FRAMES * 4      ; 2048 Byte pro Puffer (~11,6 ms)
+    28                                  TICKS_PER_TEMPO equ 1024                ; Tempo 5 = 5120 Samples/Zeile (~129 BPM)
+    29                                  
+    30                                  ; Windows-Konstanten
+    31                                  WS_TRACKER      equ 0x10CA0000          ; OVERLAPPED|CAPTION|SYSMENU|MINIMIZEBOX|VISIBLE
+    32                                  SRCCOPY         equ 0x00CC0020
+    33                                  ETO_OPAQUE      equ 2
+    34                                  TRANSPARENT     equ 1
+    35                                  WHDR_DONE       equ 0x00000001
+    36                                  IDC_ARROW       equ 32512
+    37                                  
+    38                                  WM_DESTROY      equ 0x0002
+    39                                  WM_CLOSE        equ 0x0010
+    40                                  WM_KEYDOWN      equ 0x0100
+    41                                  
+    42                                  VK_BACK         equ 0x08
+    43                                  VK_TAB          equ 0x09
+    44                                  VK_ESCAPE       equ 0x1B
+    45                                  VK_SPACE        equ 0x20
+    46                                  VK_PRIOR        equ 0x21                ; Bild Auf
+    47                                  VK_NEXT         equ 0x22                ; Bild Ab
+    48                                  VK_LEFT         equ 0x25
+    49                                  VK_UP           equ 0x26
+    50                                  VK_RIGHT        equ 0x27
+    51                                  VK_DOWN         equ 0x28
+    52                                  VK_DELETE       equ 0x2E
+    53                                  VK_F1           equ 0x70
+    54                                  VK_F2           equ 0x71
+    55                                  VK_F3           equ 0x72
+    56                                  VK_F4           equ 0x73
+    57                                  VK_F5           equ 0x74
+    58                                  VK_F6           equ 0x75
+    59                                  VK_F7           equ 0x76
+    60                                  VK_F8           equ 0x77
+    61                                  VK_F9           equ 0x78
+    62                                  VK_F10          equ 0x79
+    63                                  
+    64                                  ; Composer-669-Farbpalette (GDI COLORREF = 0x00BBGGRR)
+    65                                  COL_BG          equ 0x00624222
+    66                                  COL_BLACK       equ 0x00000000
+    67                                  COL_BEAT        equ 0x00443424
+    68                                  COL_PLAYROW     equ 0x00584814
+    69                                  COL_EDITROW     equ 0x007A5018
+    70                                  COL_CURSOR      equ 0x00F0D020          ; Helles Cyan-Gelb fuer aktives Edit-Feld
+    71                                  COL_CYAN        equ 0x00F0F000
+    72                                  COL_TEAL        equ 0x00B0B000
+    73                                  COL_HDR_ON      equ 0x00786400
+    74                                  COL_HDR_OFF     equ 0x00282848
+    75                                  COL_NOTE        equ 0x00F0D8B8
+    76                                  COL_WHITE       equ 0x00FFFFFF
+    77                                  COL_DOT         equ 0x0070583C
+    78                                  COL_PURP        equ 0x00900050
+    79                                  COL_PURPHI      equ 0x00F048B8
+    80                                  COL_MUTED       equ 0x00504040
+    81                                  
+    82                                  extern GetModuleHandleA
+    83                                  extern GetTickCount
+    84                                  extern ExitProcess
+    85                                  extern Sleep
+    86                                  extern RegisterClassA
+    87                                  extern LoadCursorA
+    88                                  extern AdjustWindowRect
+    89                                  extern CreateWindowExA
+    90                                  extern DefWindowProcA
+    91                                  extern GetDC
+    92                                  extern PeekMessageA
+    93                                  extern TranslateMessage
+    94                                  extern DispatchMessageA
+    95                                  extern CreateCompatibleDC
+    96                                  extern CreateCompatibleBitmap
+    97                                  extern SelectObject
+    98                                  extern CreateFontA
+    99                                  extern SetBkMode
+   100                                  extern SetBkColor
+   101                                  extern SetTextColor
+   102                                  extern ExtTextOutA
+   103                                  extern BitBlt
+   104                                  extern waveOutOpen
+   105                                  extern waveOutPrepareHeader
+   106                                  extern waveOutWrite
+   107                                  extern waveOutReset
+   108                                  extern waveOutClose
+   109                                  
+   110                                  ; ============================================================================
+   111                                  ; Initialisierte Daten
+   112                                  ; ============================================================================
+   113                                  section .data
+   114                                  
+   115 00000000 43363639547261636B-     clsName   db "C669TrackerCls", 0
+   115 00000009 6572436C7300       
+   116 0000000F 436F6D706F73657220-     winTitle  db "Composer 669 x64 Tracker", 0
+   116 00000018 363639207836342054-
+   116 00000021 7261636B657200     
+   117 00000028 436F6E736F6C617300      fontName  db "Consolas", 0
+   118 00000031 303132333435363738-     hexTbl    db "0123456789ABCDEF"
+   118 0000003A 39414243444546     
+   119 00000041 432043234420442345-     noteNames db "C C#D D#E F F#G G#A A#B "
+   119 0000004A 204620462347204723-
+   119 00000053 412041234220       
+   120 00000059 4F6E20                  txtOn     db "On "
+   121 0000005C 4F6666                  txtOff    db "Off"
+   122                                  
+   123 0000005F 20436F6D706F736572-     topBar    db " Composer 669 x64 Tracker        Audio: WinMM Live       Mode: PAT-LOOP        "
+   123 00000068 203636392078363420-
+   123 00000071 547261636B65722020-
+   123 0000007A 202020202020417564-
+   123 00000083 696F3A2057696E4D4D-
+   123 0000008C 204C69766520202020-
+   123 00000095 2020204D6F64653A20-
+   123 0000009E 5041542D4C4F4F5020-
+   123 000000A7 20202020202020     
+   124 000000AE 2054656D706F3A2035-     botBar    db " Tempo: 5  Oct: 2  Ch: 0  Pat: 00  Row: 00  Inst: 00  Step: 1  [SPACE=Play]    "
+   124 000000B7 20204F63743A203220-
+   124 000000C0 2043683A2030202050-
+   124 000000C9 61743A203030202052-
+   124 000000D2 6F773A203030202049-
+   124 000000DB 6E73743A2030302020-
+   124 000000E4 537465703A20312020-
+   124 000000ED 5B53504143453D506C-
+   124 000000F6 61795D20202020     
+   125                                  
+   126                                  titleBox:
+   127 000000FD 2020436F6D706F7365-         db "  Composer 669 Live Tracker (x64)   "
+   127 00000106 7220363639204C6976-
+   127 0000010F 6520547261636B6572-
+   127 00000118 202878363429202020 
+   128 00000121 202051574552545A3D-         db "  QWERTZ=Piano  Pfeile/Tab  Del/BS  "
+   128 0000012A 5069616E6F20205066-
+   128 00000133 65696C652F54616220-
+   128 0000013C 2044656C2F42532020 
+   129 00000145 202046312F323A4F63-         db "  F1/2:Oct F3/4:Ins F7/8:Tmp F10:Mut"
+   129 0000014E 742046332F343A496E-
+   129 00000157 732046372F383A546D-
+   129 00000160 70204631303A4D7574 
+   130                                  
+   131                                  sampNames:
+   132 00000169 3030204B69636B2044-         db "00 Kick Drum"
+   132 00000172 72756D             
+   133 00000175 303120536E61726520-         db "01 Snare 669"
+   133 0000017E 363639             
+   134 00000181 30322048692D486174-         db "02 Hi-Hat HP"
+   134 0000018A 204850             
+   135 0000018D 3033204F6374204261-         db "03 Oct Bass "
+   135 00000196 737320             
+   136 00000199 30342050756C736520-         db "04 Pulse Arp"
+   136 000001A2 417270             
+   137 000001A5 303520536177204C65-         db "05 Saw Lead "
+   137 000001AE 616420             
+   138 000001B1 303620506C75636B2F-         db "06 Pluck/Ech"
+   138 000001BA 456368             
+   139 000001BD 30372053696E757320-         db "07 Sinus Pad"
+   139 000001C6 506164             
+   140 000001C9 2D2D2D2D2D2D2D2D2D-         db "------------"
+   140 000001D2 2D2D2D             
+   141 000001D5 506755702F446E3A20-         db "PgUp/Dn: Pat"
+   141 000001DE 506174             
+   142 000001E1 46353A546F70204636-         db "F5:Top F6:Md"
+   142 000001EA 3A4D64             
+   143 000001ED 46393A537465702045-         db "F9:Step ESC "
+   143 000001F6 534320             
+   144                                  
+   145 000001F9 90<rep 3h>              align 4
+   146                                  sampLenTbl:
+   147 000001FC 761D00001612000000-         dd 0x01D76, 0x01216, 0x00900, 0x052C4
+   147 00000205 090000C4520000     
+   148 0000020C CD3C0000D683000026-         dd 0x03CCD, 0x083D6, 0x01026, 0x048DA
+   148 00000215 100000DA480000     
+   149 0000021C 000000000000000000-         dd 0x00000, 0x00000, 0x00000, 0x00000
+   149 00000225 00000000000000     
+   150                                  
+   151                                  statLines:
+   152 0000022C 566F6C3A20202046            db "Vol:   F"
+   153 00000234 4F72643A20203030            db "Ord:  00"
+   154 0000023C 5061743A20203030            db "Pat:  00"
+   155 00000244 526F773A20203030            db "Row:  00"
+   156 0000024C 537465703A203031            db "Step: 01"
+   157 00000254 496E73743A203030            db "Inst: 00"
+   158                                  
+   159                                  ; FPU-Konstanten fuer Sinus-Tabelle
+   160                                  align 4
+   161 0000025C DB0FC93C                f_2pi_256 dd 0.024543693
+   162 00000260 0000FE42                f_127     dd 127.0
+   163                                  
+   164                                  ; 12-TET Phaseninkremente fuer Oktave 2 (C-2 bis B-2 bei 44100 Hz)
+   165                                  align 4
+   166                                  noteTbl:
+   167 00000264 EE3261008BFA660025-         dd  6370030,  6748811,  7150117,  7575285
+   167 0000026D 1A6D00F5967300     
+   168 00000274 87767A00B9BE8100C7-         dd  8025735,  8502969,  9008583,  9544261
+   168 0000027D 75890045A29100     
+   169 00000284 2F4B9A00EE77A30057-         dd 10111791, 10713070, 11350103, 12025015
+   169 0000028D 30AD00B77CB700     
+   170                                  
+   171                                  ; Hardware-Scancode (0..63) -> Halbton-Offset (0..24) fuer QWERTZ/QWERTY-Klaviatur
+   172                                  ; Untere Reihe: Y S X D C V G B H N J M ,  (0..12)
+   173                                  ; Obere Reihe:  Q 2 W 3 E R 5 T 6 Z 7 U I  (12..24)
+   174                                  scanToNote:
+   175 00000294 FFFFFF0D0FFF1214            db 0xFF, 0xFF, 0xFF,   13,   15, 0xFF,   18,   20   ; 00..07 (2,3,5,6)
+   176 0000029C 16FFFFFFFFFFFFFF            db   22, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF   ; 08..0F (7)
+   177 000002A4 0C0E101113151718            db   12,   14,   16,   17,   19,   21,   23,   24   ; 10..17 (Q W E R T Z U I)
+   178 000002AC FFFFFFFFFFFFFF01            db 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,    1   ; 18..1F (S)
+   179 000002B4 03FF06080AFFFFFF            db    3, 0xFF,    6,    8,   10, 0xFF, 0xFF, 0xFF   ; 20..27 (D G H J)
+   180 000002BC FFFFFFFF00020405            db 0xFF, 0xFF, 0xFF, 0xFF,    0,    2,    4,    5   ; 28..2F (Y X C V)
+   181 000002C4 07090B0CFFFFFFFF            db    7,    9,   11,   12, 0xFF, 0xFF, 0xFF, 0xFF   ; 30..37 (B N M ,)
+   182 000002CC FFFFFFFFFFFFFFFF            db 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF   ; 38..3F
+   183                                  
+   184                                  ; Sub-Spalten-Geometrie innerhalb einer 8-Zeichen-Zelle
+   185 000002D4 0003050607              subColOff db 0, 3, 5, 6, 7
+   186 000002D9 0302010101              subColWid db 3, 2, 1, 1, 1
+   187                                  
+   188                                  ; Demo-Akkorde fuer die Startbelegung von Pattern 00 und 01 (lineare Noten 0..59)
+   189                                  demoChords:
+   190 000002DE 0915181C                    db  9, 21, 24, 28           ; Am
+   191 000002E2 05111518                    db  5, 17, 21, 24           ; F
+   192 000002E6 000C1013                    db  0, 12, 16, 19           ; C
+   193 000002EA 0713171A                    db  7, 19, 23, 26           ; G
+   194 000002EE 00010201                demoArpIdx db 0, 1, 2, 1
+   195                                  demoLead:
+   196 000002F2 21FF1CFF181C21FF            db 33, 0xFF, 28, 0xFF, 24, 28, 33, 0xFF
+   197 000002FA 1DFF1CFF18FF1518            db 29, 0xFF, 28, 0xFF, 24, 0xFF, 21, 24
+   198 00000302 1CFF1FFF1C181C1F            db 28, 0xFF, 31, 0xFF, 28, 24, 28, 31
+   199 0000030A 1AFF1FFF23FF1FFF            db 26, 0xFF, 31, 0xFF, 35, 0xFF, 31, 0xFF
+   200                                  
+   201                                  ; WAVEFORMATEX (16-Bit Stereo, 44100 Hz)
+   202                                  align 2
+   203                                  wfx:
+   204 00000312 0100                        dw 1
+   205 00000314 0200                        dw 2
+   206 00000316 44AC0000                    dd SAMPLE_RATE
+   207 0000031A 10B10200                    dd SAMPLE_RATE * 4
+   208 0000031E 0400                        dw 4
+   209 00000320 1000                        dw 16
+   210 00000322 0000                        dw 0
+   211                                  
+   212                                  ; ============================================================================
+   213                                  ; Uninitialisierte Daten
+   214                                  ; ============================================================================
+   215                                  section .bss
+   216                                  
+   217                                  alignb 16
+   218 00000000 ????????????????        hInst       resq 1
+   219 00000008 ????????????????        hWnd        resq 1
+   220 00000010 ????????????????        hDC         resq 1
+   221 00000018 ????????????????        memDC       resq 1
+   222 00000020 ????????????????        hWaveOut    resq 1
+   223 00000028 <res 48h>               wndClass    resb 72
+   224 00000070 <res 10h>               winRect     resd 4
+   225 00000080 <res 10h>               tmpRect     resd 4
+   226 00000090 <res 30h>               msg         resb 48
+   227                                  
+   228                                  ; Laufzeit- und Editor-Zustand
+   229                                  alignb 4
+   230 000000C0 ????????                running     resd 1
+   231 000000C4 ????????                dirty       resd 1
+   232 000000C8 ????????                lastDraw    resd 1
+   233 000000CC ????????                tmpInt      resd 1
+   234                                  
+   235 000000D0 ????????                isPlaying   resd 1
+   236 000000D4 ????????                songMode    resd 1              ; 0 = Pattern-Loop, 1 = Song-Order
+   237 000000D8 ????????                curTempo    resd 1              ; 1..15
+   238 000000DC ????????                curOct      resd 1              ; 0..3 (angezeigt als 2..5)
+   239 000000E0 ????????                curInst     resd 1              ; 0..7
+   240 000000E4 ????????                curVol      resd 1              ; 0..15
+   241 000000E8 ????????                editStep    resd 1              ; 0, 1, 2, 4
+   242                                  
+   243 000000EC ????????                curPat      resd 1              ; 0..15
+   244 000000F0 ????????                editRow     resd 1              ; 0..31
+   245 000000F4 ????????                curCh       resd 1              ; 0..7
+   246 000000F8 ????????                curSubCol   resd 1              ; 0=Note, 1=Inst, 2=Vol, 3=FxCmd, 4=FxVal
+   247                                  
+   248 000000FC ????????                playOrder   resd 1
+   249 00000100 ????????                playPat     resd 1
+   250 00000104 ????????                playRow     resd 1
+   251 00000108 ????????                orderLen    resd 1
+   252 0000010C ????????                tickSamples resd 1
+   253 00000110 ????????                fxDivCnt    resd 1
+   254 00000114 ????????                lfsr        resd 1
+   255 00000118 ????????                prevNoise   resd 1
+   256 0000011C ????????                vibPhase    resd 1
+   257                                  
+   258                                  ; Tracker-Tabellen
+   259                                  alignb 16
+   260 00000120 <res 140h>              dxTbl       resd 80
+   261 00000260 <res 400h>              sinTbl      resd 256
+   262 00000660 ????????????????        chMuted     resb NUM_CH
+   263 00000668 <res 10h>               orderList   resb 16
+   264 00000678 <res 200h>              voices      resb NUM_CH * VOICE_SIZE
+   265 00000878 <res 4000h>             patterns    resb MAX_PATS * PAT_BYTES
+   266 00004878 <res 20h>               lineBuf     resb 32
+   267 00004898 <res 10h>               cellBuf     resb 16
+   268                                  
+   269                                  ; Echtzeit-Audio-Streaming-Puffer (4 Bloecke a 512 Stereo-Frames)
+   270 000048A8 ????????????????        alignb 16
+   271 000048B0 <res C0h>               waveHdrs    resb BUF_COUNT * 48
+   272 00004970 <res 2000h>             audioBufs   resb BUF_COUNT * BUF_BYTES
+   273                                  
+   274                                  ; ============================================================================
+   275                                  ; Programmcode
+   276                                  ; ============================================================================
+   277                                  section .text
+   278                                  global start
+   279                                  
+   280                                  ; Lineare Note (AL = 0..59) in 32-Bit-Phaseninkrement (EAX) wandeln
+   281                                  note_to_inc:
+   282 00000000 0FB6C0                      movzx eax, al
+   283 00000003 31D2                        xor edx, edx
+   284 00000005 B90C000000                  mov ecx, 12
+   285 0000000A F7F1                        div ecx                     ; EAX = Oktave (0..4), EDX = Halbton (0..11)
+   286 0000000C 89C1                        mov ecx, eax
+   287 0000000E 4C8D05(64020000)            lea r8, [noteTbl]
+   288 00000015 418B0490                    mov eax, [r8 + rdx*4]
+   289 00000019 D3E0                        shl eax, cl
+   290 0000001B C3                          ret
+   291                                  
+   292                                  ; EAX auf 16-Bit-Signed begrenzen
+   293                                  clamp_s16:
+   294 0000001C 3DFF7F0000                  cmp eax, 32767
+   295 00000021 7E06                        jle .lo
+   296 00000023 B8FF7F0000                  mov eax, 32767
+   297 00000028 C3                          ret
+   298                                  .lo:
+   299 00000029 3D0180FFFF                  cmp eax, -32767
+   300 0000002E 7D05                        jge .ok
+   301 00000030 B80180FFFF                  mov eax, -32767
+   302                                  .ok:
+   303 00000035 C3                          ret
+   304                                  
+   305                                  ; Byte AL als 2 Hex-Zeichen nach [R8] schreiben
+   306                                  fmt_hex2:
+   307 00000036 488D15(31000000)            lea rdx, [hexTbl]
+   308 0000003D 0FB6C8                      movzx ecx, al
+   309 00000040 C1E904                      shr ecx, 4
+   310 00000043 8A0C0A                      mov cl, [rdx + rcx]
+   311 00000046 418808                      mov [r8], cl
+   312 00000049 0FB6C8                      movzx ecx, al
+   313 0000004C 83E10F                      and ecx, 15
+   314 0000004F 8A0C0A                      mov cl, [rdx + rcx]
+   315 00000052 41884801                    mov [r8 + 1], cl
+   316 00000056 C3                          ret
+   317                                  
+   318                                  ; 20-Bit-Wert EAX als 5 Hex-Zeichen nach [R8] schreiben
+   319                                  fmt_hex5:
+   320 00000057 488D15(31000000)            lea rdx, [hexTbl]
+   321 0000005E B904000000                  mov ecx, 4
+   322                                  .l5:
+   323 00000063 4189C1                      mov r9d, eax
+   324 00000066 4183E10F                    and r9d, 15
+   325 0000006A 468A0C0A                    mov r9b, [rdx + r9]
+   326 0000006E 45880C08                    mov [r8 + rcx], r9b
+   327 00000072 C1E804                      shr eax, 4
+   328 00000075 FFC9                        dec ecx
+   329 00000077 79EA                        jns .l5
+   330 00000079 C3                          ret
+   331                                  
+   332                                  ; Zeiger auf Zelle (ECX=pat, EDX=row, R8D=ch) in RAX berechnen
+   333                                  get_cell_ptr:
+   334 0000007A 89C8                        mov eax, ecx
+   335 0000007C C1E00A                      shl eax, 10                 ; pat * 1024
+   336 0000007F 4189D1                      mov r9d, edx
+   337 00000082 41C1E105                    shl r9d, 5                  ; row * 32
+   338 00000086 4401C8                      add eax, r9d
+   339 00000089 428D0480                    lea eax, [rax + r8*4]       ; + ch * 4
+   340 0000008D 4C8D0D(78080000)            lea r9, [patterns]
+   341 00000094 4C01C8                      add rax, r9
+   342 00000097 C3                          ret
+   343                                  
+   344                                  ; Rechteck fuellen: ECX=x, EDX=y, R8D=w, R9D=h, R10D=COLORREF
+   345                                  fill_rect:
+   346 00000098 4883EC48                    sub rsp, 0x48
+   347 0000009C 890D(80000000)              mov [tmpRect + 0], ecx
+   348 000000A2 8915(84000000)              mov [tmpRect + 4], edx
+   349 000000A8 4401C1                      add ecx, r8d
+   350 000000AB 4401CA                      add edx, r9d
+   351 000000AE 890D(88000000)              mov [tmpRect + 8], ecx
+   352 000000B4 8915(8C000000)              mov [tmpRect + 12], edx
+   353                                  
+   354 000000BA 488B0D(18000000)            mov rcx, [memDC]
+   355 000000C1 4489D2                      mov edx, r10d
+   356 000000C4 E8(00000000)                call SetBkColor
+   357                                  
+   358 000000C9 488B0D(18000000)            mov rcx, [memDC]
+   359 000000D0 31D2                        xor edx, edx
+   360 000000D2 4531C0                      xor r8d, r8d
+   361 000000D5 41B902000000                mov r9d, ETO_OPAQUE
+   362 000000DB 488D05(80000000)            lea rax, [tmpRect]
+   363 000000E2 4889442420                  mov [rsp + 0x20], rax
+   364 000000E7 48C744242800000000          mov qword [rsp + 0x28], 0
+   365 000000F0 48C744243000000000          mov qword [rsp + 0x30], 0
+   366 000000F9 48C744243800000000          mov qword [rsp + 0x38], 0
+   367 00000102 E8(00000000)                call ExtTextOutA
+   368 00000107 4883C448                    add rsp, 0x48
+   369 0000010B C3                          ret
+   370                                  
+   371                                  ; Text im 12x12-Raster zeichnen: ECX=Spalte, EDX=Zeile, R8=Ptr, R9D=Len, R10D=Farbe
+   372                                  draw_text:
+   373 0000010C 4883EC68                    sub rsp, 0x68
+   374 00000110 6BC90C                      imul ecx, CHAR_W
+   375 00000113 6BD20C                      imul edx, CHAR_H
+   376 00000116 894C2440                    mov [rsp + 0x40], ecx
+   377 0000011A 89542444                    mov [rsp + 0x44], edx
+   378 0000011E 4C89442448                  mov [rsp + 0x48], r8
+   379 00000123 44894C2450                  mov [rsp + 0x50], r9d
+   380                                  
+   381 00000128 488B0D(18000000)            mov rcx, [memDC]
+   382 0000012F 4489D2                      mov edx, r10d
+   383 00000132 E8(00000000)                call SetTextColor
+   384                                  
+   385 00000137 488B0D(18000000)            mov rcx, [memDC]
+   386 0000013E 8B542440                    mov edx, [rsp + 0x40]
+   387 00000142 448B442444                  mov r8d, [rsp + 0x44]
+   388 00000147 4531C9                      xor r9d, r9d
+   389 0000014A 48C744242000000000          mov qword [rsp + 0x20], 0
+   390 00000153 488B442448                  mov rax, [rsp + 0x48]
+   391 00000158 4889442428                  mov [rsp + 0x28], rax
+   392 0000015D 8B442450                    mov eax, [rsp + 0x50]
+   393 00000161 4889442430                  mov [rsp + 0x30], rax
+   394 00000166 488D05(20010000)            lea rax, [dxTbl]
+   395 0000016D 4889442438                  mov [rsp + 0x38], rax
+   396 00000172 E8(00000000)                call ExtTextOutA
+   397 00000177 4883C468                    add rsp, 0x68
+   398 0000017B C3                          ret
+   399                                  
+   400                                  ; ============================================================================
+   401                                  ; Echtzeit-Kanal-Trigger: ECX=Kanal (0..7), RDX=CellPtr, R8D=forcePreview
+   402                                  ; ============================================================================
+   403                                  trigger_channel:
+   404 0000017C 53                          push rbx
+   405 0000017D 56                          push rsi
+   406 0000017E 57                          push rdi
+   407 0000017F 4883EC20                    sub rsp, 0x20
+   408                                  
+   409 00000183 89CB                        mov ebx, ecx                ; Kanal 0..7
+   410 00000185 4889D6                      mov rsi, rdx                ; Zeiger auf 4-Byte-Zelle
+   411                                  
+   412                                      ; Mute pruefen (ausser bei Live-Vorhoeren)
+   413 00000188 4585C0                      test r8d, r8d
+   414 0000018B 7511                        jnz .not_muted
+   415 0000018D 488D05(60060000)            lea rax, [chMuted]
+   416 00000194 803C1800                    cmp byte [rax + rbx], 0
+   417 00000198 0F85DF000000                jne .done
+   418                                  .not_muted:
+   419                                  
+   420                                      ; Zeiger auf Voice-Struktur (voices + ch * 64) in RDI
+   421 0000019E 89D8                        mov eax, ebx
+   422 000001A0 C1E006                      shl eax, 6
+   423 000001A3 488D3D(78060000)            lea rdi, [voices]
+   424 000001AA 4801C7                      add rdi, rax
+   425                                  
+   426                                      ; Zuerst Tempo-Effekt (f = 5) ausfuehren
+   427 000001AD 0FB64603                    movzx eax, byte [rsi + 3]
+   428 000001B1 3CFF                        cmp al, 0xFF
+   429 000001B3 7421                        je .no_fx_load
+   430 000001B5 89C1                        mov ecx, eax
+   431 000001B7 C1E904                      shr ecx, 4                  ; fxCmd (0..5)
+   432 000001BA 83E00F                      and eax, 0x0F               ; fxVal (0..15)
+   433 000001BD 83F905                      cmp ecx, 5
+   434 000001C0 750C                        jne .store_fx
+   435 000001C2 85C0                        test eax, eax
+   436 000001C4 7408                        jz .store_fx
+   437 000001C6 8905(D8000000)              mov [curTempo], eax
+   438 000001CC EB08                        jmp .no_fx_load
+   439                                  .store_fx:
+   440 000001CE 894F28                      mov [rdi + 40], ecx
+   441 000001D1 89472C                      mov [rdi + 44], eax
+   442 000001D4 EB13                        jmp .chk_vol
+   443                                  .no_fx_load:
+   444                                      ; Bei neuer Note ohne Effekt den vorherigen Effekt loeschen
+   445 000001D6 803EFF                      cmp byte [rsi + 0], 0xFF
+   446 000001D9 740E                        je .chk_vol
+   447 000001DB C74728FFFFFFFF              mov dword [rdi + 40], -1
+   448 000001E2 C7472C00000000              mov dword [rdi + 44], 0
+   449                                  
+   450                                  .chk_vol:
+   451                                      ; Lautstaerke uebernehmen falls gesetzt
+   452 000001E9 0FB64602                    movzx eax, byte [rsi + 2]
+   453 000001ED 3CFF                        cmp al, 0xFF
+   454 000001EF 7415                        je .chk_note
+   455 000001F1 83E00F                      and eax, 15
+   456 000001F4 894718                      mov [rdi + 24], eax
+   457                                      ; Reine Lautstaerkeaenderung belebt VU leicht
+   458 000001F7 803EFF                      cmp byte [rsi + 0], 0xFF
+   459 000001FA 750A                        jne .chk_note
+   460 000001FC 01C0                        add eax, eax
+   461 000001FE 3B4730                      cmp eax, [rdi + 48]
+   462 00000201 7E03                        jle .chk_note
+   463 00000203 894730                      mov [rdi + 48], eax
+   464                                  
+   465                                  .chk_note:
+   466 00000206 0FB606                      movzx eax, byte [rsi + 0]
+   467 00000209 3CFF                        cmp al, 0xFF
+   468 0000020B 7470                        je .done
+   469                                  
+   470                                      ; Note vorhanden -> Stimme neu triggern
+   471 0000020D 0FB64E01                    movzx ecx, byte [rsi + 1]
+   472 00000211 80F9FF                      cmp cl, 0xFF
+   473 00000214 7406                        je .keep_inst
+   474 00000216 83E107                      and ecx, 7
+   475 00000219 894F04                      mov [rdi + 4], ecx
+   476                                  .keep_inst:
+   477 0000021C 8B4F04                      mov ecx, [rdi + 4]
+   478                                  
+   479                                      ; Phaseninkrement berechnen
+   480 0000021F 50                          push rax
+   481 00000220 E8DBFDFFFF                  call note_to_inc
+   482 00000225 89470C                      mov [rdi + 12], eax         ; inc
+   483 00000228 894710                      mov [rdi + 16], eax         ; baseInc
+   484                                      ; Quinte fuer Pad (inc * 3 / 2)
+   485 0000022B 89C2                        mov edx, eax
+   486 0000022D D1EA                        shr edx, 1
+   487 0000022F 01D0                        add eax, edx
+   488 00000231 894724                      mov [rdi + 36], eax         ; inc2
+   489 00000234 58                          pop rax
+   490                                  
+   491                                      ; Instrumentenspezifische Startwerte
+   492 00000235 C70701000000                mov dword [rdi + 0], 1      ; active = 1
+   493 0000023B C7470800000000              mov dword [rdi + 8], 0      ; phase = 0
+   494 00000242 C7472000000000              mov dword [rdi + 32], 0     ; phase2 = 0
+   495 00000249 C7471430750000              mov dword [rdi + 20], 30000 ; env = 30000
+   496                                  
+   497 00000250 837F0400                    cmp dword [rdi + 4], 0      ; Kick bekommt eigenen Pitch-Sweep-Start
+   498 00000254 7515                        jne .not_kick
+   499 00000256 C7470C00590001              mov dword [rdi + 12], 16800000
+   500 0000025D C7471000590001              mov dword [rdi + 16], 16800000
+   501 00000264 C74714007D0000              mov dword [rdi + 20], 32000
+   502                                  .not_kick:
+   503                                  
+   504                                      ; VU-Meter setzen (vol * 2, min 8)
+   505 0000026B 8B4718                      mov eax, [rdi + 24]
+   506 0000026E D1E0                        shl eax, 1
+   507 00000270 83F808                      cmp eax, 8
+   508 00000273 7305                        jae .m_ok
+   509 00000275 B808000000                  mov eax, 8
+   510                                  .m_ok:
+   511 0000027A 894730                      mov [rdi + 48], eax
+   512                                  
+   513                                  .done:
+   514 0000027D 4883C420                    add rsp, 0x20
+   515 00000281 5F                          pop rdi
+   516 00000282 5E                          pop rsi
+   517 00000283 5B                          pop rbx
+   518 00000284 C3                          ret
+   519                                  
+   520                                  ; ============================================================================
+   521                                  ; Echtzeit-Audio-Block rendern: RCX=dstPtr, EDX=numFrames
+   522                                  ; ============================================================================
+   523                                  render_audio_block:
+   524 00000285 53                          push rbx
+   525 00000286 55                          push rbp
+   526 00000287 56                          push rsi
+   527 00000288 57                          push rdi
+   528 00000289 4154                        push r12
+   529 0000028B 4155                        push r13
+   530 0000028D 4156                        push r14
+   531 0000028F 4157                        push r15
+   532 00000291 4883EC28                    sub rsp, 0x28
+   533                                  
+   534 00000295 4989CC                      mov r12, rcx                ; Zielpuffer
+   535 00000298 4189D5                      mov r13d, edx               ; Anzahl Stereo-Frames
+   536 0000029B 4C8D3D(60020000)            lea r15, [sinTbl]
+   537                                  
+   538                                  .frame_loop:
+   539                                      ; Sequenzer-Tick pruefen wenn Wiedergabe aktiv
+   540 000002A2 833D(D0000000)00            cmp dword [isPlaying], 0
+   541 000002A9 0F849F000000                je .seq_done
+   542                                  
+   543 000002AF FF0D(0C010000)              dec dword [tickSamples]
+   544 000002B5 0F8F93000000                jg .seq_done
+   545                                  
+   546                                      ; Neue Zeile ausloesen
+   547 000002BB 8B05(D8000000)              mov eax, [curTempo]
+   548 000002C1 69C000040000                imul eax, TICKS_PER_TEMPO
+   549 000002C7 8905(0C010000)              mov [tickSamples], eax
+   550                                  
+   551                                      ; Alle 8 Kanaele der aktuellen playRow triggern
+   552 000002CD 31DB                        xor ebx, ebx
+   553                                  .trig_loop:
+   554 000002CF 8B0D(00010000)              mov ecx, [playPat]
+   555 000002D5 8B15(04010000)              mov edx, [playRow]
+   556 000002DB 4189D8                      mov r8d, ebx
+   557 000002DE E897FDFFFF                  call get_cell_ptr
+   558 000002E3 89D9                        mov ecx, ebx
+   559 000002E5 4889C2                      mov rdx, rax
+   560 000002E8 4531C0                      xor r8d, r8d
+   561 000002EB E88CFEFFFF                  call trigger_channel
+   562 000002F0 FFC3                        inc ebx
+   563 000002F2 83FB08                      cmp ebx, NUM_CH
+   564 000002F5 72D8                        jb .trig_loop
+   565                                  
+   566                                      ; Naechste Zeile vorbereiten
+   567 000002F7 8B05(04010000)              mov eax, [playRow]
+   568 000002FD FFC0                        inc eax
+   569 000002FF 83F820                      cmp eax, PAT_ROWS
+   570 00000302 723A                        jb .row_ok
+   571 00000304 31C0                        xor eax, eax
+   572                                      ; Pattern-Ende: im Song-Modus naechsten Order-Eintrag waehlen
+   573 00000306 833D(D4000000)00            cmp dword [songMode], 0
+   574 0000030D 742F                        je .pat_wrap_done
+   575 0000030F 8B0D(FC000000)              mov ecx, [playOrder]
+   576 00000315 FFC1                        inc ecx
+   577 00000317 3B0D(08010000)              cmp ecx, [orderLen]
+   578 0000031D 7202                        jb .ord_ok
+   579 0000031F 31C9                        xor ecx, ecx
+   580                                  .ord_ok:
+   581 00000321 890D(FC000000)              mov [playOrder], ecx
+   582 00000327 488D15(68060000)            lea rdx, [orderList]
+   583 0000032E 0FB6140A                    movzx edx, byte [rdx + rcx]
+   584 00000332 8915(00010000)              mov [playPat], edx
+   585 00000338 8915(EC000000)              mov [curPat], edx
+   586                                  .pat_wrap_done:
+   587                                  .row_ok:
+   588 0000033E 8905(04010000)              mov [playRow], eax
+   589 00000344 C705(C4000000)0100-         mov dword [dirty], 1
+   589 0000034C 0000               
+   590                                  .seq_done:
+   591                                  
+   592                                      ; Globales Rauschen (Xorshift32) und Vibrato-LFO aktualisieren
+   593 0000034E 8B05(14010000)              mov eax, [lfsr]
+   594 00000354 89C2                        mov edx, eax
+   595 00000356 C1E00D                      shl eax, 13
+   596 00000359 31D0                        xor eax, edx
+   597 0000035B 89C2                        mov edx, eax
+   598 0000035D C1E811                      shr eax, 17
+   599 00000360 31D0                        xor eax, edx
+   600 00000362 89C2                        mov edx, eax
+   601 00000364 C1E005                      shl eax, 5
+   602 00000367 31D0                        xor eax, edx
+   603 00000369 8905(14010000)              mov [lfsr], eax
+   604 0000036F 440FBEF0                    movsx r14d, al              ; R14D = Rauschwert -128..+127
+   605                                  
+   606 00000373 8105(1C010000)7064-         add dword [vibPhase], 550000
+   606 0000037B 0800               
+   607                                  
+   608                                      ; Sub-Tick-Zaehler fuer Pitch-Effekte (alle 64 Samples)
+   609 0000037D FF05(10010000)              inc dword [fxDivCnt]
+   610 00000383 8B2D(10010000)              mov ebp, [fxDivCnt]
+   611 00000389 83E53F                      and ebp, 63                 ; EBP == 0 -> Effekt-Tick
+   612                                  
+   613                                      ; Alle 8 Stimmen in R8D (Links) und R9D (Rechts) mischen
+   614 0000038C 4531C0                      xor r8d, r8d
+   615 0000038F 4531C9                      xor r9d, r9d
+   616 00000392 488D3D(78060000)            lea rdi, [voices]
+   617 00000399 31DB                        xor ebx, ebx                ; Kanal 0..7
+   618                                  
+   619                                  .ch_mix_loop:
+   620                                      ; VU-Meter langsam abklingen lassen (bei jedem 512. Sample)
+   621 0000039B 8B05(10010000)              mov eax, [fxDivCnt]
+   622 000003A1 25FF010000                  and eax, 511
+   623 000003A6 7509                        jnz .vu_no_dec
+   624 000003A8 837F3000                    cmp dword [rdi + 48], 0
+   625 000003AC 7403                        je .vu_no_dec
+   626 000003AE FF4F30                      dec dword [rdi + 48]
+   627                                  .vu_no_dec:
+   628                                  
+   629 000003B1 833F00                      cmp dword [rdi + 0], 0
+   630 000003B4 0F842C020000                je .ch_next
+   631 000003BA 8B4F14                      mov ecx, [rdi + 20]         ; env
+   632 000003BD 83F920                      cmp ecx, 32
+   633 000003C0 0F861A020000                jbe .ch_off
+   634                                  
+   635                                      ; Effekte anwenden (alle 64 Samples)
+   636 000003C6 85ED                        test ebp, ebp
+   637 000003C8 755C                        jnz .fx_done
+   638 000003CA 8B4728                      mov eax, [rdi + 40]
+   639 000003CD 83F800                      cmp eax, 0                  ; a: Pitch Up
+   640 000003D0 750E                        jne .fx_chk_b
+   641 000003D2 8B572C                      mov edx, [rdi + 44]
+   642 000003D5 69D2B8880000                imul edx, 35000
+   643 000003DB 01570C                      add [rdi + 12], edx
+   644 000003DE EB46                        jmp .fx_done
+   645                                  .fx_chk_b:
+   646 000003E0 83F801                      cmp eax, 1                  ; b: Pitch Down
+   647 000003E3 751F                        jne .fx_chk_e
+   648 000003E5 8B572C                      mov edx, [rdi + 44]
+   649 000003E8 69D2B8880000                imul edx, 35000
+   650 000003EE 8B470C                      mov eax, [rdi + 12]
+   651 000003F1 29D0                        sub eax, edx
+   652 000003F3 3D40420F00                  cmp eax, 1000000
+   653 000003F8 7D05                        jge .b_ok
+   654 000003FA B840420F00                  mov eax, 1000000
+   655                                  .b_ok:
+   656 000003FF 89470C                      mov [rdi + 12], eax
+   657 00000402 EB22                        jmp .fx_done
+   658                                  .fx_chk_e:
+   659 00000404 83F804                      cmp eax, 4                  ; e: Vibrato
+   660 00000407 751D                        jne .fx_done
+   661 00000409 8B05(1C010000)              mov eax, [vibPhase]
+   662 0000040F C1E818                      shr eax, 24
+   663 00000412 418B0487                    mov eax, [r15 + rax*4]
+   664 00000416 0FAF472C                    imul eax, [rdi + 44]
+   665 0000041A 69C090010000                imul eax, 400
+   666 00000420 034710                      add eax, [rdi + 16]
+   667 00000423 89470C                      mov [rdi + 12], eax
+   668                                  .fx_done:
+   669                                  
+   670                                      ; Instrumenten-Synthese (EAX = Rohsample -128..+127, danach * env * vol)
+   671 00000426 8B5704                      mov edx, [rdi + 4]          ; inst 0..7
+   672 00000429 83FA00                      cmp edx, 0
+   673 0000042C 7437                        je .inst_kick
+   674 0000042E 83FA01                      cmp edx, 1
+   675 00000431 7468                        je .inst_snare
+   676 00000433 83FA02                      cmp edx, 2
+   677 00000436 0F848A000000                je .inst_hat
+   678 0000043C 83FA03                      cmp edx, 3
+   679 0000043F 0F849F000000                je .inst_bass
+   680 00000445 83FA04                      cmp edx, 4
+   681 00000448 0F84C6000000                je .inst_arp
+   682 0000044E 83FA05                      cmp edx, 5
+   683 00000451 0F84EA000000                je .inst_lead
+   684 00000457 83FA06                      cmp edx, 6
+   685 0000045A 0F84FF000000                je .inst_pluck
+   686 00000460 E918010000                  jmp .inst_pad
+   687                                  
+   688                                  .inst_kick:
+   689 00000465 8B470C                      mov eax, [rdi + 12]
+   690 00000468 014708                      add [rdi + 8], eax
+   691 0000046B 3DC0304600                  cmp eax, 4600000
+   692 00000470 760A                        jbe .k_flr
+   693 00000472 89C2                        mov edx, eax
+   694 00000474 C1EA0A                      shr edx, 10
+   695 00000477 29D0                        sub eax, edx
+   696 00000479 89470C                      mov [rdi + 12], eax
+   697                                  .k_flr:
+   698 0000047C 8B4708                      mov eax, [rdi + 8]
+   699 0000047F C1E818                      shr eax, 24
+   700 00000482 418B0487                    mov eax, [r15 + rax*4]
+   701 00000486 0FAFC1                      imul eax, ecx
+   702 00000489 C1F809                      sar eax, 9
+   703 0000048C 89CA                        mov edx, ecx
+   704 0000048E C1EA0B                      shr edx, 11
+   705 00000491 29D1                        sub ecx, edx
+   706 00000493 894F14                      mov [rdi + 20], ecx
+   707 00000496 E914010000                  jmp .mix_vol_pan
+   708                                  
+   709                                  .inst_snare:
+   710 0000049B 814708E08B2901              add dword [rdi + 8], 19500000
+   711 000004A2 8B4708                      mov eax, [rdi + 8]
+   712 000004A5 C1E818                      shr eax, 24
+   713 000004A8 418B0487                    mov eax, [r15 + rax*4]
+   714 000004AC D1F8                        sar eax, 1
+   715 000004AE 4401F0                      add eax, r14d
+   716 000004B1 0FAFC1                      imul eax, ecx
+   717 000004B4 C1F80A                      sar eax, 10
+   718 000004B7 89CA                        mov edx, ecx
+   719 000004B9 C1EA0B                      shr edx, 11
+   720 000004BC 29D1                        sub ecx, edx
+   721 000004BE 894F14                      mov [rdi + 20], ecx
+   722 000004C1 E9E9000000                  jmp .mix_vol_pan
+   723                                  
+   724                                  .inst_hat:
+   725 000004C6 4489F0                      mov eax, r14d
+   726 000004C9 2B05(18010000)              sub eax, [prevNoise]
+   727 000004CF 0FAFC1                      imul eax, ecx
+   728 000004D2 C1F80A                      sar eax, 10
+   729 000004D5 89CA                        mov edx, ecx
+   730 000004D7 C1EA09                      shr edx, 9
+   731 000004DA 29D1                        sub ecx, edx
+   732 000004DC 894F14                      mov [rdi + 20], ecx
+   733 000004DF E9CB000000                  jmp .mix_vol_pan
+   734                                  
+   735                                  .inst_bass:
+   736 000004E4 8B470C                      mov eax, [rdi + 12]
+   737 000004E7 014708                      add [rdi + 8], eax
+   738 000004EA 8B4708                      mov eax, [rdi + 8]
+   739 000004ED C1F818                      sar eax, 24
+   740 000004F0 0FAFC1                      imul eax, ecx
+   741 000004F3 C1F809                      sar eax, 9
+   742 000004F6 8B571C                      mov edx, [rdi + 28]         ; Tiefpass-Zustand
+   743 000004F9 29D0                        sub eax, edx
+   744 000004FB C1F803                      sar eax, 3
+   745 000004FE 01C2                        add edx, eax
+   746 00000500 89571C                      mov [rdi + 28], edx
+   747 00000503 89D0                        mov eax, edx
+   748 00000505 89CA                        mov edx, ecx
+   749 00000507 C1EA0B                      shr edx, 11
+   750 0000050A 29D1                        sub ecx, edx
+   751 0000050C 894F14                      mov [rdi + 20], ecx
+   752 0000050F E99B000000                  jmp .mix_vol_pan
+   753                                  
+   754                                  .inst_arp:
+   755 00000514 8B470C                      mov eax, [rdi + 12]
+   756 00000517 014708                      add [rdi + 8], eax
+   757 0000051A 817F0800000040              cmp dword [rdi + 8], 0x40000000
+   758 00000521 7207                        jb .a_hi
+   759 00000523 B8DCFFFFFF                  mov eax, -36
+   760 00000528 EB05                        jmp .a_go
+   761                                  .a_hi:
+   762 0000052A B86C000000                  mov eax, 108
+   763                                  .a_go:
+   764 0000052F 0FAFC1                      imul eax, ecx
+   765 00000532 C1F80A                      sar eax, 10
+   766 00000535 89CA                        mov edx, ecx
+   767 00000537 C1EA0A                      shr edx, 10
+   768 0000053A 29D1                        sub ecx, edx
+   769 0000053C 894F14                      mov [rdi + 20], ecx
+   770 0000053F EB6E                        jmp .mix_vol_pan
+   771                                  
+   772                                  .inst_lead:
+   773 00000541 8B470C                      mov eax, [rdi + 12]
+   774 00000544 014708                      add [rdi + 8], eax
+   775 00000547 8B4708                      mov eax, [rdi + 8]
+   776 0000054A C1F818                      sar eax, 24
+   777 0000054D 0FAFC1                      imul eax, ecx
+   778 00000550 C1F80A                      sar eax, 10
+   779 00000553 89CA                        mov edx, ecx
+   780 00000555 C1EA0C                      shr edx, 12
+   781 00000558 29D1                        sub ecx, edx
+   782 0000055A 894F14                      mov [rdi + 20], ecx
+   783 0000055D EB50                        jmp .mix_vol_pan
+   784                                  
+   785                                  .inst_pluck:
+   786 0000055F 8B470C                      mov eax, [rdi + 12]
+   787 00000562 014708                      add [rdi + 8], eax
+   788 00000565 8B4708                      mov eax, [rdi + 8]
+   789 00000568 C1F818                      sar eax, 24
+   790 0000056B 0FAFC1                      imul eax, ecx
+   791 0000056E C1F80A                      sar eax, 10
+   792 00000571 89CA                        mov edx, ecx
+   793 00000573 C1EA0B                      shr edx, 11
+   794 00000576 29D1                        sub ecx, edx
+   795 00000578 894F14                      mov [rdi + 20], ecx
+   796 0000057B EB32                        jmp .mix_vol_pan
+   797                                  
+   798                                  .inst_pad:
+   799 0000057D 8B470C                      mov eax, [rdi + 12]
+   800 00000580 014708                      add [rdi + 8], eax
+   801 00000583 8B4708                      mov eax, [rdi + 8]
+   802 00000586 C1E818                      shr eax, 24
+   803 00000589 418B3487                    mov esi, [r15 + rax*4]
+   804 0000058D 8B4724                      mov eax, [rdi + 36]
+   805 00000590 014720                      add [rdi + 32], eax
+   806 00000593 8B4720                      mov eax, [rdi + 32]
+   807 00000596 C1E818                      shr eax, 24
+   808 00000599 41033487                    add esi, [r15 + rax*4]
+   809 0000059D 89F0                        mov eax, esi
+   810 0000059F 0FAFC1                      imul eax, ecx
+   811 000005A2 C1F80B                      sar eax, 11
+   812 000005A5 89CA                        mov edx, ecx
+   813 000005A7 C1EA0E                      shr edx, 14                 ; langsamer Pad-Ausklang
+   814 000005AA 29D1                        sub ecx, edx
+   815 000005AC 894F14                      mov [rdi + 20], ecx
+   816                                  
+   817                                  .mix_vol_pan:
+   818                                      ; Mit Kanallautstaerke (0..15) skalieren
+   819 000005AF 0FAF4718                    imul eax, [rdi + 24]
+   820 000005B3 C1F804                      sar eax, 4
+   821                                  
+   822                                      ; 669-Stereo-Panning: Kick mittig, gerade Kanaele L-betont, ungerade R-betont
+   823 000005B6 837F0400                    cmp dword [rdi + 4], 0
+   824 000005BA 741C                        je .pan_center
+   825 000005BC F7C301000000                test ebx, 1
+   826 000005C2 750A                        jnz .pan_right
+   827 000005C4 4101C0                      add r8d, eax
+   828 000005C7 D1F8                        sar eax, 1
+   829 000005C9 4101C1                      add r9d, eax
+   830 000005CC EB18                        jmp .ch_next
+   831                                  .pan_right:
+   832 000005CE 4101C1                      add r9d, eax
+   833 000005D1 D1F8                        sar eax, 1
+   834 000005D3 4101C0                      add r8d, eax
+   835 000005D6 EB0E                        jmp .ch_next
+   836                                  .pan_center:
+   837 000005D8 4101C0                      add r8d, eax
+   838 000005DB 4101C1                      add r9d, eax
+   839 000005DE EB06                        jmp .ch_next
+   840                                  
+   841                                  .ch_off:
+   842 000005E0 C70700000000                mov dword [rdi + 0], 0
+   843                                  .ch_next:
+   844 000005E6 4883C740                    add rdi, VOICE_SIZE
+   845 000005EA FFC3                        inc ebx
+   846 000005EC 83FB08                      cmp ebx, NUM_CH
+   847 000005EF 0F82A6FDFFFF                jb .ch_mix_loop
+   848                                  
+   849 000005F5 448935(18010000)            mov [prevNoise], r14d
+   850                                  
+   851                                      ; Stereo-Sample begrenzen und in Puffer schreiben
+   852 000005FC 4489C0                      mov eax, r8d
+   853 000005FF E818FAFFFF                  call clamp_s16
+   854 00000604 6641890424                  mov [r12], ax
+   855 00000609 4489C8                      mov eax, r9d
+   856 0000060C E80BFAFFFF                  call clamp_s16
+   857 00000611 664189442402                mov [r12 + 2], ax
+   858                                  
+   859 00000617 4983C404                    add r12, 4
+   860 0000061B 41FFCD                      dec r13d
+   861 0000061E 0F857EFCFFFF                jnz .frame_loop
+   862                                  
+   863 00000624 4883C428                    add rsp, 0x28
+   864 00000628 415F                        pop r15
+   865 0000062A 415E                        pop r14
+   866 0000062C 415D                        pop r13
+   867 0000062E 415C                        pop r12
+   868 00000630 5F                          pop rdi
+   869 00000631 5E                          pop rsi
+   870 00000632 5D                          pop rbp
+   871 00000633 5B                          pop rbx
+   872 00000634 C3                          ret
+   873                                  
+   874                                  ; ============================================================================
+   875                                  ; Audio-Streaming-Puffer nachfuellen (non-blocking)
+   876                                  ; ============================================================================
+   877                                  pump_audio:
+   878 00000635 53                          push rbx
+   879 00000636 56                          push rsi
+   880 00000637 57                          push rdi
+   881 00000638 4883EC30                    sub rsp, 0x30
+   882                                  
+   883 0000063C 31DB                        xor ebx, ebx
+   884                                  .p_loop:
+   885 0000063E 89D8                        mov eax, ebx
+   886 00000640 6BC030                      imul eax, 48
+   887 00000643 488D35(B0480000)            lea rsi, [waveHdrs]
+   888 0000064A 4801C6                      add rsi, rax
+   889                                  
+   890 0000064D F7461801000000              test dword [rsi + 24], WHDR_DONE
+   891 00000654 7422                        jz .p_next
+   892                                  
+   893 00000656 488B0E                      mov rcx, [rsi + 0]          ; lpData
+   894 00000659 BA00020000                  mov edx, BUF_FRAMES
+   895 0000065E E822FCFFFF                  call render_audio_block
+   896                                  
+   897 00000663 488B0D(20000000)            mov rcx, [hWaveOut]
+   898 0000066A 4889F2                      mov rdx, rsi
+   899 0000066D 41B830000000                mov r8d, 48
+   900 00000673 E8(00000000)                call waveOutWrite
+   901                                  
+   902                                  .p_next:
+   903 00000678 FFC3                        inc ebx
+   904 0000067A 83FB04                      cmp ebx, BUF_COUNT
+   905 0000067D 72BF                        jb .p_loop
+   906                                  
+   907 0000067F 4883C430                    add rsp, 0x30
+   908 00000683 5F                          pop rdi
+   909 00000684 5E                          pop rsi
+   910 00000685 5B                          pop rbx
+   911 00000686 C3                          ret
+   912                                  
+   913                                  ; ============================================================================
+   914                                  ; Tastatur-Handler: ECX=wParam (VK), EDX=lParam
+   915                                  ; ============================================================================
+   916                                  handle_keydown:
+   917 00000687 53                          push rbx
+   918 00000688 56                          push rsi
+   919 00000689 57                          push rdi
+   920 0000068A 4883EC20                    sub rsp, 0x20
+   921                                  
+   922 0000068E 89CB                        mov ebx, ecx                ; VK-Code
+   923 00000690 89D6                        mov esi, edx                ; lParam
+   924                                  
+   925                                      ; ESC -> Beenden
+   926 00000692 83FB1B                      cmp ebx, VK_ESCAPE
+   927 00000695 750F                        jne .chk_space
+   928 00000697 C705(C0000000)0000-         mov dword [running], 0
+   928 0000069F 0000               
+   929 000006A1 E985040000                  jmp .k_done
+   930                                  
+   931                                  .chk_space:
+   932                                      ; Leertaste -> Play / Stop ab aktueller Zeile
+   933 000006A6 83FB20                      cmp ebx, VK_SPACE
+   934 000006A9 7547                        jne .chk_f5
+   935 000006AB F7C600000040                test esi, 0x40000000        ; Auto-Repeat ignorieren
+   936 000006B1 0F8574040000                jnz .k_done
+   937 000006B7 8335(D0000000)01            xor dword [isPlaying], 1
+   938 000006BE 833D(D0000000)00            cmp dword [isPlaying], 0
+   939 000006C5 0F8460040000                je .k_done
+   940 000006CB 8B05(EC000000)              mov eax, [curPat]
+   941 000006D1 8905(00010000)              mov [playPat], eax
+   942 000006D7 8B05(F0000000)              mov eax, [editRow]
+   943 000006DD 8905(04010000)              mov [playRow], eax
+   944 000006E3 C705(0C010000)0100-         mov dword [tickSamples], 1
+   944 000006EB 0000               
+   945 000006ED E939040000                  jmp .k_done
+   946                                  
+   947                                  .chk_f5:
+   948                                      ; F5 -> Wiedergabe ab Zeile 00 starten
+   949 000006F2 83FB74                      cmp ebx, VK_F5
+   950 000006F5 7539                        jne .chk_f6
+   951 000006F7 C705(D0000000)0100-         mov dword [isPlaying], 1
+   951 000006FF 0000               
+   952 00000701 8B05(EC000000)              mov eax, [curPat]
+   953 00000707 8905(00010000)              mov [playPat], eax
+   954 0000070D C705(04010000)0000-         mov dword [playRow], 0
+   954 00000715 0000               
+   955 00000717 C705(FC000000)0000-         mov dword [playOrder], 0
+   955 0000071F 0000               
+   956 00000721 C705(0C010000)0100-         mov dword [tickSamples], 1
+   956 00000729 0000               
+   957 0000072B E9FB030000                  jmp .k_done
+   958                                  
+   959                                  .chk_f6:
+   960                                      ; F6 -> Pattern-Loop / Song-Order umschalten
+   961 00000730 83FB75                      cmp ebx, VK_F6
+   962 00000733 750C                        jne .chk_f1
+   963 00000735 8335(D4000000)01            xor dword [songMode], 1
+   964 0000073C E9EA030000                  jmp .k_done
+   965                                  
+   966                                  .chk_f1:
+   967 00000741 83FB70                      cmp ebx, VK_F1
+   968 00000744 7518                        jne .chk_f2
+   969 00000746 833D(DC000000)00            cmp dword [curOct], 0
+   970 0000074D 0F84D8030000                je .k_done
+   971 00000753 FF0D(DC000000)              dec dword [curOct]
+   972 00000759 E9CD030000                  jmp .k_done
+   973                                  
+   974                                  .chk_f2:
+   975 0000075E 83FB71                      cmp ebx, VK_F2
+   976 00000761 7518                        jne .chk_f3
+   977 00000763 833D(DC000000)03            cmp dword [curOct], 3
+   978 0000076A 0F83BB030000                jae .k_done
+   979 00000770 FF05(DC000000)              inc dword [curOct]
+   980 00000776 E9B0030000                  jmp .k_done
+   981                                  
+   982                                  .chk_f3:
+   983 0000077B 83FB72                      cmp ebx, VK_F3
+   984 0000077E 7516                        jne .chk_f4
+   985 00000780 8B05(E0000000)              mov eax, [curInst]
+   986 00000786 FFC8                        dec eax
+   987 00000788 83E007                      and eax, 7
+   988 0000078B 8905(E0000000)              mov [curInst], eax
+   989 00000791 E995030000                  jmp .k_done
+   990                                  
+   991                                  .chk_f4:
+   992 00000796 83FB73                      cmp ebx, VK_F4
+   993 00000799 7516                        jne .chk_f7
+   994 0000079B 8B05(E0000000)              mov eax, [curInst]
+   995 000007A1 FFC0                        inc eax
+   996 000007A3 83E007                      and eax, 7
+   997 000007A6 8905(E0000000)              mov [curInst], eax
+   998 000007AC E97A030000                  jmp .k_done
+   999                                  
+  1000                                  .chk_f7:
+  1001 000007B1 83FB76                      cmp ebx, VK_F7
+  1002 000007B4 7518                        jne .chk_f8
+  1003 000007B6 833D(D8000000)01            cmp dword [curTempo], 1
+  1004 000007BD 0F8E68030000                jle .k_done
+  1005 000007C3 FF0D(D8000000)              dec dword [curTempo]
+  1006 000007C9 E95D030000                  jmp .k_done
+  1007                                  
+  1008                                  .chk_f8:
+  1009 000007CE 83FB77                      cmp ebx, VK_F8
+  1010 000007D1 7518                        jne .chk_f9
+  1011 000007D3 833D(D8000000)0F            cmp dword [curTempo], 15
+  1012 000007DA 0F834B030000                jae .k_done
+  1013 000007E0 FF05(D8000000)              inc dword [curTempo]
+  1014 000007E6 E940030000                  jmp .k_done
+  1015                                  
+  1016                                  .chk_f9:
+  1017                                      ; F9 -> Edit-Step durchschalten (1 -> 2 -> 4 -> 0 -> 1)
+  1018 000007EB 83FB78                      cmp ebx, VK_F9
+  1019 000007EE 7551                        jne .chk_f10
+  1020 000007F0 8B05(E8000000)              mov eax, [editStep]
+  1021 000007F6 83F801                      cmp eax, 1
+  1022 000007F9 7419                        je .st2
+  1023 000007FB 83F802                      cmp eax, 2
+  1024 000007FE 7423                        je .st4
+  1025 00000800 83F804                      cmp eax, 4
+  1026 00000803 742D                        je .st0
+  1027 00000805 C705(E8000000)0100-         mov dword [editStep], 1
+  1027 0000080D 0000               
+  1028 0000080F E917030000                  jmp .k_done
+  1029                                  .st2:
+  1030 00000814 C705(E8000000)0200-         mov dword [editStep], 2
+  1030 0000081C 0000               
+  1031 0000081E E908030000                  jmp .k_done
+  1032                                  .st4:
+  1033 00000823 C705(E8000000)0400-         mov dword [editStep], 4
+  1033 0000082B 0000               
+  1034 0000082D E9F9020000                  jmp .k_done
+  1035                                  .st0:
+  1036 00000832 C705(E8000000)0000-         mov dword [editStep], 0
+  1036 0000083A 0000               
+  1037 0000083C E9EA020000                  jmp .k_done
+  1038                                  
+  1039                                  .chk_f10:
+  1040                                      ; F10 -> Aktuellen Kanal stummschalten (On/Off)
+  1041 00000841 83FB79                      cmp ebx, VK_F10
+  1042 00000844 7516                        jne .chk_up
+  1043 00000846 8B05(F4000000)              mov eax, [curCh]
+  1044 0000084C 488D15(60060000)            lea rdx, [chMuted]
+  1045 00000853 80340201                    xor byte [rdx + rax], 1
+  1046 00000857 E9CF020000                  jmp .k_done
+  1047                                  
+  1048                                  .chk_up:
+  1049 0000085C 83FB26                      cmp ebx, VK_UP
+  1050 0000085F 7516                        jne .chk_down
+  1051 00000861 8B05(F0000000)              mov eax, [editRow]
+  1052 00000867 FFC8                        dec eax
+  1053 00000869 83E01F                      and eax, 31
+  1054 0000086C 8905(F0000000)              mov [editRow], eax
+  1055 00000872 E9B4020000                  jmp .k_done
+  1056                                  
+  1057                                  .chk_down:
+  1058 00000877 83FB28                      cmp ebx, VK_DOWN
+  1059 0000087A 7516                        jne .chk_left
+  1060 0000087C 8B05(F0000000)              mov eax, [editRow]
+  1061 00000882 FFC0                        inc eax
+  1062 00000884 83E01F                      and eax, 31
+  1063 00000887 8905(F0000000)              mov [editRow], eax
+  1064 0000088D E999020000                  jmp .k_done
+  1065                                  
+  1066                                  .chk_left:
+  1067 00000892 83FB25                      cmp ebx, VK_LEFT
+  1068 00000895 752B                        jne .chk_right
+  1069 00000897 8B05(F8000000)              mov eax, [curSubCol]
+  1070 0000089D FFC8                        dec eax
+  1071 0000089F 7916                        jns .l_ok
+  1072 000008A1 B804000000                  mov eax, 4
+  1073 000008A6 8B0D(F4000000)              mov ecx, [curCh]
+  1074 000008AC FFC9                        dec ecx
+  1075 000008AE 83E107                      and ecx, 7
+  1076 000008B1 890D(F4000000)              mov [curCh], ecx
+  1077                                  .l_ok:
+  1078 000008B7 8905(F8000000)              mov [curSubCol], eax
+  1079 000008BD E969020000                  jmp .k_done
+  1080                                  
+  1081                                  .chk_right:
+  1082 000008C2 83FB27                      cmp ebx, VK_RIGHT
+  1083 000008C5 752B                        jne .chk_tab
+  1084 000008C7 8B05(F8000000)              mov eax, [curSubCol]
+  1085 000008CD FFC0                        inc eax
+  1086 000008CF 83F805                      cmp eax, 5
+  1087 000008D2 7213                        jb .r_ok
+  1088 000008D4 31C0                        xor eax, eax
+  1089 000008D6 8B0D(F4000000)              mov ecx, [curCh]
+  1090 000008DC FFC1                        inc ecx
+  1091 000008DE 83E107                      and ecx, 7
+  1092 000008E1 890D(F4000000)              mov [curCh], ecx
+  1093                                  .r_ok:
+  1094 000008E7 8905(F8000000)              mov [curSubCol], eax
+  1095 000008ED E939020000                  jmp .k_done
+  1096                                  
+  1097                                  .chk_tab:
+  1098 000008F2 83FB09                      cmp ebx, VK_TAB
+  1099 000008F5 7520                        jne .chk_pgup
+  1100 000008F7 8B05(F4000000)              mov eax, [curCh]
+  1101 000008FD FFC0                        inc eax
+  1102 000008FF 83E007                      and eax, 7
+  1103 00000902 8905(F4000000)              mov [curCh], eax
+  1104 00000908 C705(F8000000)0000-         mov dword [curSubCol], 0
+  1104 00000910 0000               
+  1105 00000912 E914020000                  jmp .k_done
+  1106                                  
+  1107                                  .chk_pgup:
+  1108 00000917 83FB21                      cmp ebx, VK_PRIOR
+  1109 0000091A 7516                        jne .chk_pgdn
+  1110 0000091C 8B05(EC000000)              mov eax, [curPat]
+  1111 00000922 FFC0                        inc eax
+  1112 00000924 83E00F                      and eax, 15
+  1113 00000927 8905(EC000000)              mov [curPat], eax
+  1114 0000092D E9F9010000                  jmp .k_done
+  1115                                  
+  1116                                  .chk_pgdn:
+  1117 00000932 83FB22                      cmp ebx, VK_NEXT
+  1118 00000935 7516                        jne .chk_del
+  1119 00000937 8B05(EC000000)              mov eax, [curPat]
+  1120 0000093D FFC8                        dec eax
+  1121 0000093F 83E00F                      and eax, 15
+  1122 00000942 8905(EC000000)              mov [curPat], eax
+  1123 00000948 E9DE010000                  jmp .k_done
+  1124                                  
+  1125                                  .chk_del:
+  1126 0000094D 83FB2E                      cmp ebx, VK_DELETE
+  1127 00000950 7553                        jne .chk_bs
+  1128 00000952 8B0D(EC000000)              mov ecx, [curPat]
+  1129 00000958 8B15(F0000000)              mov edx, [editRow]
+  1130 0000095E 448B05(F4000000)            mov r8d, [curCh]
+  1131 00000965 E810F7FFFF                  call get_cell_ptr
+  1132 0000096A 8B0D(F8000000)              mov ecx, [curSubCol]
+  1133 00000970 83F900                      cmp ecx, 0
+  1134 00000973 7425                        je .del_all
+  1135 00000975 83F902                      cmp ecx, 2
+  1136 00000978 740E                        je .del_vol
+  1137 0000097A 83F903                      cmp ecx, 3
+  1138 0000097D 7312                        jae .del_fx
+  1139 0000097F C64001FF                    mov byte [rax + 1], 0xFF
+  1140 00000983 E98E010000                  jmp .adv_step
+  1141                                  .del_vol:
+  1142 00000988 C64002FF                    mov byte [rax + 2], 0xFF
+  1143 0000098C E985010000                  jmp .adv_step
+  1144                                  .del_fx:
+  1145 00000991 C64003FF                    mov byte [rax + 3], 0xFF
+  1146 00000995 E97C010000                  jmp .adv_step
+  1147                                  .del_all:
+  1148 0000099A C700FFFFFFFF                mov dword [rax], 0xFFFFFFFF
+  1149 000009A0 E971010000                  jmp .adv_step
+  1150                                  
+  1151                                  .chk_bs:
+  1152 000009A5 83FB08                      cmp ebx, VK_BACK
+  1153 000009A8 7530                        jne .chk_edit_input
+  1154 000009AA 8B05(F0000000)              mov eax, [editRow]
+  1155 000009B0 FFC8                        dec eax
+  1156 000009B2 83E01F                      and eax, 31
+  1157 000009B5 8905(F0000000)              mov [editRow], eax
+  1158 000009BB 8B0D(EC000000)              mov ecx, [curPat]
+  1159 000009C1 89C2                        mov edx, eax
+  1160 000009C3 448B05(F4000000)            mov r8d, [curCh]
+  1161 000009CA E8ABF6FFFF                  call get_cell_ptr
+  1162 000009CF C700FFFFFFFF                mov dword [rax], 0xFFFFFFFF
+  1163 000009D5 E951010000                  jmp .k_done
+  1164                                  
+  1165                                  .chk_edit_input:
+  1166                                      ; Eingabe abhaengig von aktiver Sub-Spalte
+  1167 000009DA 8B0D(EC000000)              mov ecx, [curPat]
+  1168 000009E0 8B15(F0000000)              mov edx, [editRow]
+  1169 000009E6 448B05(F4000000)            mov r8d, [curCh]
+  1170 000009ED E888F6FFFF                  call get_cell_ptr
+  1171 000009F2 4889C7                      mov rdi, rax                ; RDI = aktuelle Zelle
+  1172                                  
+  1173 000009F5 8B05(F8000000)              mov eax, [curSubCol]
+  1174 000009FB 83F800                      cmp eax, 0
+  1175 000009FE 7420                        je .in_note
+  1176 00000A00 83F801                      cmp eax, 1
+  1177 00000A03 0F848B000000                je .in_inst
+  1178 00000A09 83F802                      cmp eax, 2
+  1179 00000A0C 0F849B000000                je .in_vol
+  1180 00000A12 83F803                      cmp eax, 3
+  1181 00000A15 0F84A7000000                je .in_fxcmd
+  1182 00000A1B E9D6000000                  jmp .in_fxval
+  1183                                  
+  1184                                  .in_note:
+  1185                                      ; Auto-Repeat beim Piano ignorieren
+  1186 00000A20 F7C600000040                test esi, 0x40000000
+  1187 00000A26 0F85FF000000                jnz .k_done
+  1188 00000A2C 89F0                        mov eax, esi
+  1189 00000A2E C1E810                      shr eax, 16
+  1190 00000A31 25FF000000                  and eax, 0xFF
+  1191 00000A36 83F840                      cmp eax, 64
+  1192 00000A39 0F83EC000000                jae .k_done
+  1193 00000A3F 488D15(94020000)            lea rdx, [scanToNote]
+  1194 00000A46 0FB60402                    movzx eax, byte [rdx + rax]
+  1195 00000A4A 3CFF                        cmp al, 0xFF
+  1196 00000A4C 0F84D9000000                je .k_done
+  1197                                  
+  1198                                      ; Note = curOct * 12 + scanOffset (max 59)
+  1199 00000A52 8B0D(DC000000)              mov ecx, [curOct]
+  1200 00000A58 6BC90C                      imul ecx, 12
+  1201 00000A5B 01C8                        add eax, ecx
+  1202 00000A5D 83F83B                      cmp eax, 59
+  1203 00000A60 7E05                        jle .n_ok
+  1204 00000A62 B83B000000                  mov eax, 59
+  1205                                  .n_ok:
+  1206 00000A67 8807                        mov [rdi + 0], al
+  1207 00000A69 8B05(E0000000)              mov eax, [curInst]
+  1208 00000A6F 884701                      mov [rdi + 1], al
+  1209 00000A72 8B05(E4000000)              mov eax, [curVol]
+  1210 00000A78 884702                      mov [rdi + 2], al
+  1211                                  
+  1212                                      ; Live vorhoeren ueber Echtzeit-Synth
+  1213 00000A7B 8B0D(F4000000)              mov ecx, [curCh]
+  1214 00000A81 4889FA                      mov rdx, rdi
+  1215 00000A84 41B801000000                mov r8d, 1
+  1216 00000A8A E8EDF6FFFF                  call trigger_channel
+  1217 00000A8F E982000000                  jmp .adv_step
+  1218                                  
+  1219                                  .in_inst:
+  1220 00000A94 E89A000000                  call vk_to_hex
+  1221 00000A99 83F807                      cmp eax, 7
+  1222 00000A9C 0F8789000000                ja .k_done
+  1223 00000AA2 884701                      mov [rdi + 1], al
+  1224 00000AA5 8905(E0000000)              mov [curInst], eax
+  1225 00000AAB EB69                        jmp .adv_step
+  1226                                  
+  1227                                  .in_vol:
+  1228 00000AAD E881000000                  call vk_to_hex
+  1229 00000AB2 83F80F                      cmp eax, 15
+  1230 00000AB5 7774                        ja .k_done
+  1231 00000AB7 884702                      mov [rdi + 2], al
+  1232 00000ABA 8905(E4000000)              mov [curVol], eax
+  1233 00000AC0 EB54                        jmp .adv_step
+  1234                                  
+  1235                                  .in_fxcmd:
+  1236                                      ; Nur Effekte A..F (0..5)
+  1237 00000AC2 83FB41                      cmp ebx, 'A'
+  1238 00000AC5 7264                        jb .k_done
+  1239 00000AC7 83FB46                      cmp ebx, 'F'
+  1240 00000ACA 775F                        ja .k_done
+  1241 00000ACC 89D8                        mov eax, ebx
+  1242 00000ACE 83E841                      sub eax, 'A'
+  1243 00000AD1 C1E004                      shl eax, 4
+  1244 00000AD4 0FB64F03                    movzx ecx, byte [rdi + 3]
+  1245 00000AD8 80F9FF                      cmp cl, 0xFF
+  1246 00000ADB 7505                        jne .fx_keep_lo
+  1247 00000ADD 83C801                      or eax, 1
+  1248 00000AE0 EB05                        jmp .fx_store
+  1249                                  .fx_keep_lo:
+  1250 00000AE2 83E10F                      and ecx, 0x0F
+  1251 00000AE5 09C8                        or eax, ecx
+  1252                                  .fx_store:
+  1253 00000AE7 884703                      mov [rdi + 3], al
+  1254 00000AEA C705(F8000000)0400-         mov dword [curSubCol], 4
+  1254 00000AF2 0000               
+  1255 00000AF4 EB35                        jmp .k_done
+  1256                                  
+  1257                                  .in_fxval:
+  1258 00000AF6 E838000000                  call vk_to_hex
+  1259 00000AFB 83F80F                      cmp eax, 15
+  1260 00000AFE 772B                        ja .k_done
+  1261 00000B00 0FB64F03                    movzx ecx, byte [rdi + 3]
+  1262 00000B04 80F9FF                      cmp cl, 0xFF
+  1263 00000B07 7422                        je .k_done
+  1264 00000B09 81E1F0000000                and ecx, 0xF0
+  1265 00000B0F 09C1                        or ecx, eax
+  1266 00000B11 884F03                      mov [rdi + 3], cl
+  1267 00000B14 EB00                        jmp .adv_step
+  1268                                  
+  1269                                  .adv_step:
+  1270 00000B16 8B05(F0000000)              mov eax, [editRow]
+  1271 00000B1C 0305(E8000000)              add eax, [editStep]
+  1272 00000B22 83E01F                      and eax, 31
+  1273 00000B25 8905(F0000000)              mov [editRow], eax
+  1274                                  
+  1275                                  .k_done:
+  1276 00000B2B 4883C420                    add rsp, 0x20
+  1277 00000B2F 5F                          pop rdi
+  1278 00000B30 5E                          pop rsi
+  1279 00000B31 5B                          pop rbx
+  1280 00000B32 C3                          ret
+  1281                                  
+  1282                                  ; Hilfsfunktion: VK in EBX -> Hex-Wert 0..15 in EAX (oder 0xFF)
+  1283                                  vk_to_hex:
+  1284 00000B33 83FB30                      cmp ebx, '0'
+  1285 00000B36 722B                        jb .vh_no
+  1286 00000B38 83FB39                      cmp ebx, '9'
+  1287 00000B3B 761A                        jbe .vh_dig
+  1288 00000B3D 83FB41                      cmp ebx, 'A'
+  1289 00000B40 7205                        jb .vh_num
+  1290 00000B42 83FB46                      cmp ebx, 'F'
+  1291 00000B45 7616                        jbe .vh_af
+  1292                                  .vh_num:
+  1293 00000B47 83FB60                      cmp ebx, 0x60               ; Numpad 0..9
+  1294 00000B4A 7217                        jb .vh_no
+  1295 00000B4C 83FB69                      cmp ebx, 0x69
+  1296 00000B4F 7712                        ja .vh_no
+  1297 00000B51 89D8                        mov eax, ebx
+  1298 00000B53 83E860                      sub eax, 0x60
+  1299 00000B56 C3                          ret
+  1300                                  .vh_dig:
+  1301 00000B57 89D8                        mov eax, ebx
+  1302 00000B59 83E830                      sub eax, '0'
+  1303 00000B5C C3                          ret
+  1304                                  .vh_af:
+  1305 00000B5D 89D8                        mov eax, ebx
+  1306 00000B5F 83E837                      sub eax, 'A' - 10
+  1307 00000B62 C3                          ret
+  1308                                  .vh_no:
+  1309 00000B63 B8FF000000                  mov eax, 0xFF
+  1310 00000B68 C3                          ret
+  1311                                  
+  1312                                  ; ============================================================================
+  1313                                  ; Fensterprozedur (x64 ABI konform)
+  1314                                  ; ============================================================================
+  1315                                  WndProc:
+  1316 00000B69 81FA00010000                cmp edx, WM_KEYDOWN
+  1317 00000B6F 741C                        je .on_key
+  1318 00000B71 83FA10                      cmp edx, WM_CLOSE
+  1319 00000B74 740A                        je .on_close
+  1320 00000B76 83FA02                      cmp edx, WM_DESTROY
+  1321 00000B79 7405                        je .on_close
+  1322 00000B7B E9(00000000)                jmp DefWindowProcA
+  1323                                  
+  1324                                  .on_close:
+  1325 00000B80 C705(C0000000)0000-         mov dword [running], 0
+  1325 00000B88 0000               
+  1326 00000B8A 31C0                        xor eax, eax
+  1327 00000B8C C3                          ret
+  1328                                  
+  1329                                  .on_key:
+  1330 00000B8D 4883EC28                    sub rsp, 0x28
+  1331 00000B91 4489C1                      mov ecx, r8d
+  1332 00000B94 4489CA                      mov edx, r9d
+  1333 00000B97 E8EBFAFFFF                  call handle_keydown
+  1334 00000B9C C705(C4000000)0100-         mov dword [dirty], 1
+  1334 00000BA4 0000               
+  1335 00000BA6 4883C428                    add rsp, 0x28
+  1336 00000BAA 31C0                        xor eax, eax
+  1337 00000BAC C3                          ret
+  1338                                  
+  1339                                  ; ============================================================================
+  1340                                  ; 4-Byte-Zelle in 8 ASCII-Zeichen nach [cellBuf] formatieren (RSI = CellPtr)
+  1341                                  ; ============================================================================
+  1342                                  format_cell_text:
+  1343 00000BAD C705(98480000)2E2E-         mov dword [cellBuf + 0], 0x2E2E2E2E
+  1343 00000BB5 2E2E               
+  1344 00000BB7 C705(9C480000)2E2E-         mov dword [cellBuf + 4], 0x2E2E2E2E
+  1344 00000BBF 2E2E               
+  1345                                  
+  1346                                      ; Note (Bytes 0..2)
+  1347 00000BC1 0FB606                      movzx eax, byte [rsi + 0]
+  1348 00000BC4 3CFF                        cmp al, 0xFF
+  1349 00000BC6 7424                        je .fc_inst
+  1350 00000BC8 31D2                        xor edx, edx
+  1351 00000BCA B90C000000                  mov ecx, 12
+  1352 00000BCF F7F1                        div ecx                     ; EAX=Oktave, EDX=Halbton
+  1353 00000BD1 0432                        add al, '2'
+  1354 00000BD3 4C8D05(41000000)            lea r8, [noteNames]
+  1355 00000BDA 66418B0C50                  mov cx, [r8 + rdx*2]
+  1356 00000BDF 66890D(98480000)            mov [cellBuf + 0], cx
+  1357 00000BE6 8805(9A480000)              mov [cellBuf + 2], al
+  1358                                  
+  1359                                  .fc_inst:
+  1360 00000BEC 0FB64601                    movzx eax, byte [rsi + 1]
+  1361 00000BF0 3CFF                        cmp al, 0xFF
+  1362 00000BF2 7411                        je .fc_vol
+  1363 00000BF4 C605(9B480000)30            mov byte [cellBuf + 3], '0'
+  1364 00000BFB 2407                        and al, 7
+  1365 00000BFD 0430                        add al, '0'
+  1366 00000BFF 8805(9C480000)              mov [cellBuf + 4], al
+  1367                                  
+  1368                                  .fc_vol:
+  1369 00000C05 0FB64602                    movzx eax, byte [rsi + 2]
+  1370 00000C09 3CFF                        cmp al, 0xFF
+  1371 00000C0B 7414                        je .fc_fx
+  1372 00000C0D 83E00F                      and eax, 15
+  1373 00000C10 4C8D05(31000000)            lea r8, [hexTbl]
+  1374 00000C17 418A0400                    mov al, [r8 + rax]
+  1375 00000C1B 8805(9D480000)              mov [cellBuf + 5], al
+  1376                                  
+  1377                                  .fc_fx:
+  1378 00000C21 0FB64603                    movzx eax, byte [rsi + 3]
+  1379 00000C25 3CFF                        cmp al, 0xFF
+  1380 00000C27 7422                        je .fc_done
+  1381 00000C29 89C1                        mov ecx, eax
+  1382 00000C2B C1E904                      shr ecx, 4
+  1383 00000C2E 80C161                      add cl, 'a'
+  1384 00000C31 880D(9E480000)              mov [cellBuf + 6], cl
+  1385 00000C37 83E00F                      and eax, 15
+  1386 00000C3A 4C8D05(31000000)            lea r8, [hexTbl]
+  1387 00000C41 418A0400                    mov al, [r8 + rax]
+  1388 00000C45 8805(9F480000)              mov [cellBuf + 7], al
+  1389                                  
+  1390                                  .fc_done:
+  1391 00000C4B C3                          ret
+  1392                                  
+  1393                                  ; ============================================================================
+  1394                                  ; Gesamte Composer-669-Oberflaeche in memDC zeichnen und blitten
+  1395                                  ; ============================================================================
+  1396                                  draw_screen:
+  1397 00000C4C 53                          push rbx
+  1398 00000C4D 55                          push rbp
+  1399 00000C4E 56                          push rsi
+  1400 00000C4F 57                          push rdi
+  1401 00000C50 4154                        push r12
+  1402 00000C52 4155                        push r13
+  1403 00000C54 4156                        push r14
+  1404 00000C56 4157                        push r15
+  1405 00000C58 4883EC48                    sub rsp, 0x48
+  1406                                  
+  1407                                      ; Hintergrund
+  1408 00000C5C 31C9                        xor ecx, ecx
+  1409 00000C5E 31D2                        xor edx, edx
+  1410 00000C60 41B8C0030000                mov r8d, WIN_W
+  1411 00000C66 41B958020000                mov r9d, WIN_H
+  1412 00000C6C 41BA22426200                mov r10d, COL_BG
+  1413 00000C72 E821F4FFFF                  call fill_rect
+  1414                                  
+  1415                                      ; Mode-Text in Kopfzeile aktualisieren
+  1416 00000C77 833D(D4000000)00            cmp dword [songMode], 0
+  1417 00000C7E 7416                        je .m_pat
+  1418 00000C80 C705(9E000000)534F-         mov dword [topBar + 63], 'SONG'
+  1418 00000C88 4E47               
+  1419 00000C8A C705(A2000000)2D4F-         mov dword [topBar + 67], '-ORD'
+  1419 00000C92 5244               
+  1420 00000C94 EB14                        jmp .m_draw
+  1421                                  .m_pat:
+  1422 00000C96 C705(9E000000)5041-         mov dword [topBar + 63], 'PAT-'
+  1422 00000C9E 542D               
+  1423 00000CA0 C705(A2000000)4C4F-         mov dword [topBar + 67], 'LOOP'
+  1423 00000CA8 4F50               
+  1424                                  .m_draw:
+  1425 00000CAA 31C9                        xor ecx, ecx
+  1426 00000CAC 31D2                        xor edx, edx
+  1427 00000CAE 4C8D05(5F000000)            lea r8, [topBar]
+  1428 00000CB5 41B94F000000                mov r9d, 79
+  1429 00000CBB 41BA00F0F000                mov r10d, COL_CYAN
+  1430 00000CC1 E846F4FFFF                  call draw_text
+  1431                                  
+  1432                                      ; Schwarze Sample-Box (Spalten 4..15, Zeilen 2..13)
+  1433 00000CC6 B930000000                  mov ecx, 4 * CHAR_W
+  1434 00000CCB BA18000000                  mov edx, 2 * CHAR_H
+  1435 00000CD0 41B890000000                mov r8d, 12 * CHAR_W
+  1436 00000CD6 41B990000000                mov r9d, 12 * CHAR_H
+  1437 00000CDC 41BA00000000                mov r10d, COL_BLACK
+  1438 00000CE2 E8B1F3FFFF                  call fill_rect
+  1439                                  
+  1440                                      ; Schwarze Titel-Box (Spalten 35..70, Zeilen 2..4)
+  1441 00000CE7 B9A4010000                  mov ecx, 35 * CHAR_W
+  1442 00000CEC BA18000000                  mov edx, 2 * CHAR_H
+  1443 00000CF1 41B8B0010000                mov r8d, 36 * CHAR_W
+  1444 00000CF7 41B924000000                mov r9d, 3 * CHAR_H
+  1445 00000CFD 41BA00000000                mov r10d, COL_BLACK
+  1446 00000D03 E890F3FFFF                  call fill_rect
+  1447                                  
+  1448 00000D08 31DB                        xor ebx, ebx
+  1449                                  .t_loop:
+  1450 00000D0A B923000000                  mov ecx, 35
+  1451 00000D0F 8D5302                      lea edx, [rbx + 2]
+  1452 00000D12 89D8                        mov eax, ebx
+  1453 00000D14 6BC024                      imul eax, 36
+  1454 00000D17 4C8D05(FD000000)            lea r8, [titleBox]
+  1455 00000D1E 4901C0                      add r8, rax
+  1456 00000D21 41B924000000                mov r9d, 36
+  1457 00000D27 41BA00F0F000                mov r10d, COL_CYAN
+  1458 00000D2D E8DAF3FFFF                  call draw_text
+  1459 00000D32 FFC3                        inc ebx
+  1460 00000D34 83FB03                      cmp ebx, 3
+  1461 00000D37 72D1                        jb .t_loop
+  1462                                  
+  1463                                      ; Sample-Liste, Hex-Adressen und rechte Order-Liste (12 Zeilen)
+  1464 00000D39 31DB                        xor ebx, ebx
+  1465                                  .up_loop:
+  1466 00000D3B 448D6302                    lea r12d, [rbx + 2]
+  1467                                  
+  1468 00000D3F 88D8                        mov al, bl
+  1469 00000D41 4C8D05(78480000)            lea r8, [lineBuf]
+  1470 00000D48 E8E9F2FFFF                  call fmt_hex2
+  1471 00000D4D B901000000                  mov ecx, 1
+  1472 00000D52 4489E2                      mov edx, r12d
+  1473 00000D55 4C8D05(78480000)            lea r8, [lineBuf]
+  1474 00000D5C 41B902000000                mov r9d, 2
+  1475 00000D62 41BA00B0B000                mov r10d, COL_TEAL
+  1476 00000D68 3B1D(E0000000)              cmp ebx, [curInst]
+  1477 00000D6E 7506                        jne .si_col
+  1478 00000D70 41BA00F0F000                mov r10d, COL_CYAN
+  1479                                  .si_col:
+  1480 00000D76 E891F3FFFF                  call draw_text
+  1481                                  
+  1482 00000D7B 89D8                        mov eax, ebx
+  1483 00000D7D 6BC00C                      imul eax, 12
+  1484 00000D80 4C8D05(69010000)            lea r8, [sampNames]
+  1485 00000D87 4901C0                      add r8, rax
+  1486 00000D8A B904000000                  mov ecx, 4
+  1487 00000D8F 4489E2                      mov edx, r12d
+  1488 00000D92 41B90C000000                mov r9d, 12
+  1489 00000D98 41BAB8D8F000                mov r10d, COL_NOTE
+  1490 00000D9E 3B1D(E0000000)              cmp ebx, [curInst]
+  1491 00000DA4 7506                        jne .sn_col
+  1492 00000DA6 41BAFFFFFF00                mov r10d, COL_WHITE
+  1493                                  .sn_col:
+  1494 00000DAC E85BF3FFFF                  call draw_text
+  1495                                  
+  1496                                      ; 3 Hex-Spalten
+  1497 00000DB1 4C8D2D(FC010000)            lea r13, [sampLenTbl]
+  1498 00000DB8 458B749D00                  mov r14d, [r13 + rbx*4]
+  1499 00000DBD 31C0                        xor eax, eax
+  1500 00000DBF 83FB03                      cmp ebx, 3
+  1501 00000DC2 720B                        jb .hx0
+  1502 00000DC4 83FB07                      cmp ebx, 7
+  1503 00000DC7 7706                        ja .hx0
+  1504 00000DC9 4489F0                      mov eax, r14d
+  1505 00000DCC C1E802                      shr eax, 2
+  1506                                  .hx0:
+  1507 00000DCF 4C8D05(78480000)            lea r8, [lineBuf]
+  1508 00000DD6 E87CF2FFFF                  call fmt_hex5
+  1509 00000DDB C605(7D480000)20            mov byte [lineBuf + 5], ' '
+  1510 00000DE2 B8FFFF0F00                  mov eax, 0xFFFFF
+  1511 00000DE7 83FB03                      cmp ebx, 3
+  1512 00000DEA 7208                        jb .hx1
+  1513 00000DEC 83FB07                      cmp ebx, 7
+  1514 00000DEF 7703                        ja .hx1
+  1515 00000DF1 4489F0                      mov eax, r14d
+  1516                                  .hx1:
+  1517 00000DF4 4C8D05(7E480000)            lea r8, [lineBuf + 6]
+  1518 00000DFB E857F2FFFF                  call fmt_hex5
+  1519 00000E00 C605(83480000)20            mov byte [lineBuf + 11], ' '
+  1520 00000E07 4489F0                      mov eax, r14d
+  1521 00000E0A 4C8D05(84480000)            lea r8, [lineBuf + 12]
+  1522 00000E11 E841F2FFFF                  call fmt_hex5
+  1523                                  
+  1524 00000E16 B911000000                  mov ecx, 17
+  1525 00000E1B 4489E2                      mov edx, r12d
+  1526 00000E1E 4C8D05(78480000)            lea r8, [lineBuf]
+  1527 00000E25 41B911000000                mov r9d, 17
+  1528 00000E2B 41BAB8D8F000                mov r10d, COL_NOTE
+  1529 00000E31 E8D6F2FFFF                  call draw_text
+  1530                                  
+  1531                                      ; Rechte Order-Tabelle
+  1532 00000E36 88D8                        mov al, bl
+  1533 00000E38 4C8D05(78480000)            lea r8, [lineBuf]
+  1534 00000E3F E8F2F1FFFF                  call fmt_hex2
+  1535 00000E44 C605(7A480000)20            mov byte [lineBuf + 2], ' '
+  1536 00000E4B 4C8D2D(68060000)            lea r13, [orderList]
+  1537 00000E52 418A441D00                  mov al, [r13 + rbx]
+  1538 00000E57 4C8D05(7B480000)            lea r8, [lineBuf + 3]
+  1539 00000E5E E8D3F1FFFF                  call fmt_hex2
+  1540 00000E63 C605(7D480000)20            mov byte [lineBuf + 5], ' '
+  1541 00000E6A 8B05(D8000000)              mov eax, [curTempo]
+  1542 00000E70 4C8D2D(31000000)            lea r13, [hexTbl]
+  1543 00000E77 418A440500                  mov al, [r13 + rax]
+  1544 00000E7C 8805(7E480000)              mov [lineBuf + 6], al
+  1545                                  
+  1546 00000E82 41BA00B0B000                mov r10d, COL_TEAL
+  1547 00000E88 3B1D(FC000000)              cmp ebx, [playOrder]
+  1548 00000E8E 7506                        jne .ord_c
+  1549 00000E90 41BA00F0F000                mov r10d, COL_CYAN
+  1550                                  .ord_c:
+  1551 00000E96 B948000000                  mov ecx, 72
+  1552 00000E9B 4489E2                      mov edx, r12d
+  1553 00000E9E 4C8D05(78480000)            lea r8, [lineBuf]
+  1554 00000EA5 41B907000000                mov r9d, 7
+  1555 00000EAB E85CF2FFFF                  call draw_text
+  1556                                  
+  1557 00000EB0 FFC3                        inc ebx
+  1558 00000EB2 83FB0C                      cmp ebx, 12
+  1559 00000EB5 0F8280FEFFFF                jb .up_loop
+  1560                                  
+  1561                                      ; Status-Block aktualisieren
+  1562 00000EBB 8B05(E4000000)              mov eax, [curVol]
+  1563 00000EC1 488D15(31000000)            lea rdx, [hexTbl]
+  1564 00000EC8 8A0402                      mov al, [rdx + rax]
+  1565 00000ECB 8805(33020000)              mov [statLines + 0 + 7], al
+  1566 00000ED1 8A05(FC000000)              mov al, [playOrder]
+  1567 00000ED7 4C8D05(3A020000)            lea r8, [statLines + 8 + 6]
+  1568 00000EDE E853F1FFFF                  call fmt_hex2
+  1569 00000EE3 8A05(EC000000)              mov al, [curPat]
+  1570 00000EE9 4C8D05(42020000)            lea r8, [statLines + 16 + 6]
+  1571 00000EF0 E841F1FFFF                  call fmt_hex2
+  1572 00000EF5 8A05(F0000000)              mov al, [editRow]
+  1573 00000EFB 4C8D05(4A020000)            lea r8, [statLines + 24 + 6]
+  1574 00000F02 E82FF1FFFF                  call fmt_hex2
+  1575 00000F07 8A05(E8000000)              mov al, [editStep]
+  1576 00000F0D 4C8D05(52020000)            lea r8, [statLines + 32 + 6]
+  1577 00000F14 E81DF1FFFF                  call fmt_hex2
+  1578 00000F19 8A05(E0000000)              mov al, [curInst]
+  1579 00000F1F 4C8D05(5A020000)            lea r8, [statLines + 40 + 6]
+  1580 00000F26 E80BF1FFFF                  call fmt_hex2
+  1581                                  
+  1582 00000F2B 31DB                        xor ebx, ebx
+  1583                                  .st_loop:
+  1584 00000F2D 89D8                        mov eax, ebx
+  1585 00000F2F C1E003                      shl eax, 3
+  1586 00000F32 4C8D25(2C020000)            lea r12, [statLines]
+  1587 00000F39 4901C4                      add r12, rax
+  1588 00000F3C 448D6B07                    lea r13d, [rbx + 7]
+  1589                                  
+  1590 00000F40 B92C000000                  mov ecx, 44
+  1591 00000F45 4489EA                      mov edx, r13d
+  1592 00000F48 4D89E0                      mov r8, r12
+  1593 00000F4B 41B905000000                mov r9d, 5
+  1594 00000F51 41BA00B0B000                mov r10d, COL_TEAL
+  1595 00000F57 E8B0F1FFFF                  call draw_text
+  1596                                  
+  1597 00000F5C B931000000                  mov ecx, 49
+  1598 00000F61 4489EA                      mov edx, r13d
+  1599 00000F64 4D8D442405                  lea r8, [r12 + 5]
+  1600 00000F69 41B903000000                mov r9d, 3
+  1601 00000F6F 41BA00F0F000                mov r10d, COL_CYAN
+  1602 00000F75 E892F1FFFF                  call draw_text
+  1603                                  
+  1604 00000F7A FFC3                        inc ebx
+  1605 00000F7C 83FB06                      cmp ebx, 6
+  1606 00000F7F 72AC                        jb .st_loop
+  1607                                  
+  1608                                      ; Live-VU-Meter und rechte Mini-LEDs direkt aus den 8 Echtzeit-Voices
+  1609 00000F81 31DB                        xor ebx, ebx
+  1610                                  .vu_loop:
+  1611 00000F83 89D8                        mov eax, ebx
+  1612 00000F85 C1E006                      shl eax, 6
+  1613 00000F88 4C8D25(78060000)            lea r12, [voices]
+  1614 00000F8F 458B6C0430                  mov r13d, [r12 + rax + 48]          ; Live-Pegel 0..30
+  1615                                  
+  1616 00000F94 4589EE                      mov r14d, r13d
+  1617 00000F97 456BF603                    imul r14d, 3
+  1618 00000F9B 4585F6                      test r14d, r14d
+  1619 00000F9E 7422                        jz .vu_no_bar
+  1620 00000FA0 8D4B23                      lea ecx, [rbx + 35]
+  1621 00000FA3 6BC90C                      imul ecx, CHAR_W
+  1622 00000FA6 BAA8000000                  mov edx, 14 * CHAR_H
+  1623 00000FAB 4429F2                      sub edx, r14d
+  1624 00000FAE 41B80A000000                mov r8d, CHAR_W - 2
+  1625 00000FB4 4589F1                      mov r9d, r14d
+  1626 00000FB7 41BA50009000                mov r10d, COL_PURP
+  1627 00000FBD E8D6F0FFFF                  call fill_rect
+  1628                                  .vu_no_bar:
+  1629                                  
+  1630 00000FC2 88D8                        mov al, bl
+  1631 00000FC4 4C8D05(78480000)            lea r8, [lineBuf]
+  1632 00000FCB E866F0FFFF                  call fmt_hex2
+  1633 00000FD0 B935000000                  mov ecx, 53
+  1634 00000FD5 8D5306                      lea edx, [rbx + 6]
+  1635 00000FD8 4C8D05(78480000)            lea r8, [lineBuf]
+  1636 00000FDF 41B902000000                mov r9d, 2
+  1637 00000FE5 41BAB8D8F000                mov r10d, COL_NOTE
+  1638 00000FEB E81CF1FFFF                  call draw_text
+  1639                                  
+  1640 00000FF0 4589EE                      mov r14d, r13d
+  1641 00000FF3 41C1EE02                    shr r14d, 2
+  1642 00000FF7 4531FF                      xor r15d, r15d
+  1643                                  .m_seg:
+  1644 00000FFA 4539F7                      cmp r15d, r14d
+  1645 00000FFD 732C                        jae .m_done
+  1646 00000FFF 418D4F38                    lea ecx, [r15 + 56]
+  1647 00001003 6BC90C                      imul ecx, CHAR_W
+  1648 00001006 8D5306                      lea edx, [rbx + 6]
+  1649 00001009 6BD20C                      imul edx, CHAR_H
+  1650 0000100C 83C203                      add edx, 3
+  1651 0000100F 41B807000000                mov r8d, 7
+  1652 00001015 41B906000000                mov r9d, 6
+  1653 0000101B 41BA50009000                mov r10d, COL_PURP
+  1654 00001021 E872F0FFFF                  call fill_rect
+  1655 00001026 41FFC7                      inc r15d
+  1656 00001029 EBCF                        jmp .m_seg
+  1657                                  .m_done:
+  1658                                  
+  1659 0000102B FFC3                        inc ebx
+  1660 0000102D 83FB08                      cmp ebx, NUM_CH
+  1661 00001030 0F824DFFFFFF                jb .vu_loop
+  1662                                  
+  1663                                      ; Linker violetter Vertikalbalken + Positionszeiger fuer Edit- und Play-Zeile
+  1664 00001036 B930000000                  mov ecx, 4 * CHAR_W
+  1665 0000103B BAC0000000                  mov edx, 16 * CHAR_H
+  1666 00001040 41B824000000                mov r8d, 3 * CHAR_W
+  1667 00001046 41B980010000                mov r9d, 32 * CHAR_H
+  1668 0000104C 41BA50009000                mov r10d, COL_PURP
+  1669 00001052 E841F0FFFF                  call fill_rect
+  1670                                  
+  1671 00001057 833D(D0000000)00            cmp dword [isPlaying], 0
+  1672 0000105E 742A                        je .no_pbar
+  1673 00001060 B930000000                  mov ecx, 4 * CHAR_W
+  1674 00001065 8B05(04010000)              mov eax, [playRow]
+  1675 0000106B 83C010                      add eax, 16
+  1676 0000106E 6BC00C                      imul eax, CHAR_H
+  1677 00001071 89C2                        mov edx, eax
+  1678 00001073 41B824000000                mov r8d, 3 * CHAR_W
+  1679 00001079 41B90C000000                mov r9d, CHAR_H
+  1680 0000107F 41BA00F0F000                mov r10d, COL_CYAN
+  1681 00001085 E80EF0FFFF                  call fill_rect
+  1682                                  .no_pbar:
+  1683                                  
+  1684 0000108A B930000000                  mov ecx, 4 * CHAR_W
+  1685 0000108F 8B05(F0000000)              mov eax, [editRow]
+  1686 00001095 83C010                      add eax, 16
+  1687 00001098 6BC00C                      imul eax, CHAR_H
+  1688 0000109B 89C2                        mov edx, eax
+  1689 0000109D 41B824000000                mov r8d, 3 * CHAR_W
+  1690 000010A3 41B90C000000                mov r9d, CHAR_H
+  1691 000010A9 41BAB848F000                mov r10d, COL_PURPHI
+  1692 000010AF E8E4EFFFFF                  call fill_rect
+  1693                                  
+  1694                                      ; 8 Kanal-Koepfe ("On" / "Off") und schwarze Spalten
+  1695 000010B4 31DB                        xor ebx, ebx
+  1696                                  .hdr_loop:
+  1697 000010B6 4189DC                      mov r12d, ebx
+  1698 000010B9 456BE409                    imul r12d, 9
+  1699 000010BD 4183C408                    add r12d, 8
+  1700                                  
+  1701 000010C1 488D15(60060000)            lea rdx, [chMuted]
+  1702 000010C8 803C1A00                    cmp byte [rdx + rbx], 0
+  1703 000010CC 7515                        jne .hdr_muted
+  1704 000010CE 41BA00647800                mov r10d, COL_HDR_ON
+  1705 000010D4 4C8D2D(59000000)            lea r13, [txtOn]
+  1706 000010DB 41BE00F0F000                mov r14d, COL_CYAN
+  1707 000010E1 EB13                        jmp .hdr_draw
+  1708                                  .hdr_muted:
+  1709 000010E3 41BA48282800                mov r10d, COL_HDR_OFF
+  1710 000010E9 4C8D2D(5C000000)            lea r13, [txtOff]
+  1711 000010F0 41BEB848F000                mov r14d, COL_PURPHI
+  1712                                  .hdr_draw:
+  1713 000010F6 4489E1                      mov ecx, r12d
+  1714 000010F9 6BC90C                      imul ecx, CHAR_W
+  1715 000010FC BAB4000000                  mov edx, 15 * CHAR_H
+  1716 00001101 41B860000000                mov r8d, 8 * CHAR_W
+  1717 00001107 41B90C000000                mov r9d, CHAR_H
+  1718 0000110D E886EFFFFF                  call fill_rect
+  1719                                  
+  1720 00001112 418D4C2403                  lea ecx, [r12 + 3]
+  1721 00001117 BA0F000000                  mov edx, 15
+  1722 0000111C 4D89E8                      mov r8, r13
+  1723 0000111F 41B903000000                mov r9d, 3
+  1724 00001125 4589F2                      mov r10d, r14d
+  1725 00001128 E8DFEFFFFF                  call draw_text
+  1726                                  
+  1727 0000112D 4489E1                      mov ecx, r12d
+  1728 00001130 6BC90C                      imul ecx, CHAR_W
+  1729 00001133 BAC0000000                  mov edx, 16 * CHAR_H
+  1730 00001138 41B860000000                mov r8d, 8 * CHAR_W
+  1731 0000113E 41B980010000                mov r9d, 32 * CHAR_H
+  1732 00001144 41BA00000000                mov r10d, COL_BLACK
+  1733 0000114A E849EFFFFF                  call fill_rect
+  1734                                  
+  1735 0000114F FFC3                        inc ebx
+  1736 00001151 83FB08                      cmp ebx, NUM_CH
+  1737 00001154 0F825CFFFFFF                jb .hdr_loop
+  1738                                  
+  1739                                      ; 32 Pattern-Zeilen fuer curPat zeichnen
+  1740 0000115A 4531E4                      xor r12d, r12d
+  1741                                  .row_draw:
+  1742 0000115D 458D6C2410                  lea r13d, [r12 + 16]
+  1743                                  
+  1744 00001162 4488E0                      mov al, r12b
+  1745 00001165 4C8D05(78480000)            lea r8, [lineBuf]
+  1746 0000116C E8C5EEFFFF                  call fmt_hex2
+  1747 00001171 B901000000                  mov ecx, 1
+  1748 00001176 4489EA                      mov edx, r13d
+  1749 00001179 4C8D05(78480000)            lea r8, [lineBuf]
+  1750 00001180 41B902000000                mov r9d, 2
+  1751 00001186 41BA00B0B000                mov r10d, COL_TEAL
+  1752 0000118C 443B25(F0000000)            cmp r12d, [editRow]
+  1753 00001193 7506                        jne .rn_c
+  1754 00001195 41BAFFFFFF00                mov r10d, COL_WHITE
+  1755                                  .rn_c:
+  1756 0000119B E86CEFFFFF                  call draw_text
+  1757                                  
+  1758 000011A0 31DB                        xor ebx, ebx
+  1759                                  .ch_draw:
+  1760 000011A2 4189DF                      mov r15d, ebx
+  1761 000011A5 456BFF09                    imul r15d, 9
+  1762 000011A9 4183C708                    add r15d, 8
+  1763                                  
+  1764                                      ; Zeilen-Hintergrund (Edit-Zeile, Play-Zeile oder jeder 4. Beat)
+  1765 000011AD 443B25(F0000000)            cmp r12d, [editRow]
+  1766 000011B4 7439                        je .bg_edit
+  1767 000011B6 833D(D0000000)00            cmp dword [isPlaying], 0
+  1768 000011BD 7417                        je .bg_chk_beat
+  1769 000011BF 8B05(EC000000)              mov eax, [curPat]
+  1770 000011C5 3B05(00010000)              cmp eax, [playPat]
+  1771 000011CB 7509                        jne .bg_chk_beat
+  1772 000011CD 443B25(04010000)            cmp r12d, [playRow]
+  1773 000011D4 7411                        je .bg_play
+  1774                                  .bg_chk_beat:
+  1775 000011D6 41F7C403000000              test r12d, 3
+  1776 000011DD 7533                        jnz .bg_skip
+  1777 000011DF 41BA24344400                mov r10d, COL_BEAT
+  1778 000011E5 EB0E                        jmp .bg_paint
+  1779                                  .bg_play:
+  1780 000011E7 41BA14485800                mov r10d, COL_PLAYROW
+  1781 000011ED EB06                        jmp .bg_paint
+  1782                                  .bg_edit:
+  1783 000011EF 41BA18507A00                mov r10d, COL_EDITROW
+  1784                                  .bg_paint:
+  1785 000011F5 4489F9                      mov ecx, r15d
+  1786 000011F8 6BC90C                      imul ecx, CHAR_W
+  1787 000011FB 4489EA                      mov edx, r13d
+  1788 000011FE 6BD20C                      imul edx, CHAR_H
+  1789 00001201 41B860000000                mov r8d, 8 * CHAR_W
+  1790 00001207 41B90C000000                mov r9d, CHAR_H
+  1791 0000120D E886EEFFFF                  call fill_rect
+  1792                                  .bg_skip:
+  1793                                  
+  1794                                      ; Aktiver Edit-Cursor als Sub-Spalten-Block hervorheben
+  1795 00001212 443B25(F0000000)            cmp r12d, [editRow]
+  1796 00001219 7546                        jne .no_cur_box
+  1797 0000121B 3B1D(F4000000)              cmp ebx, [curCh]
+  1798 00001221 753E                        jne .no_cur_box
+  1799 00001223 8B05(F8000000)              mov eax, [curSubCol]
+  1800 00001229 488D15(D4020000)            lea rdx, [subColOff]
+  1801 00001230 0FB60C02                    movzx ecx, byte [rdx + rax]
+  1802 00001234 4401F9                      add ecx, r15d
+  1803 00001237 6BC90C                      imul ecx, CHAR_W
+  1804 0000123A 4489EA                      mov edx, r13d
+  1805 0000123D 6BD20C                      imul edx, CHAR_H
+  1806 00001240 4C8D05(D9020000)            lea r8, [subColWid]
+  1807 00001247 450FB60400                  movzx r8d, byte [r8 + rax]
+  1808 0000124C 456BC00C                    imul r8d, CHAR_W
+  1809 00001250 41B90C000000                mov r9d, CHAR_H
+  1810 00001256 41BA20D0F000                mov r10d, COL_CURSOR
+  1811 0000125C E837EEFFFF                  call fill_rect
+  1812                                  .no_cur_box:
+  1813                                  
+  1814                                      ; Zelle formatieren
+  1815 00001261 8B0D(EC000000)              mov ecx, [curPat]
+  1816 00001267 4489E2                      mov edx, r12d
+  1817 0000126A 4189D8                      mov r8d, ebx
+  1818 0000126D E808EEFFFF                  call get_cell_ptr
+  1819 00001272 4889C6                      mov rsi, rax
+  1820 00001275 E833F9FFFF                  call format_cell_text
+  1821                                  
+  1822                                      ; Textfarben je nach Inhalt und Mute-Zustand
+  1823 0000127A 488D15(60060000)            lea rdx, [chMuted]
+  1824 00001281 0FB62C1A                    movzx ebp, byte [rdx + rbx]
+  1825                                  
+  1826                                      ; Bytes 0..5 (Note, Inst, Vol)
+  1827 00001285 41BA3C587000                mov r10d, COL_DOT
+  1828 0000128B 803EFF                      cmp byte [rsi + 0], 0xFF
+  1829 0000128E 750C                        jne .has_note_col
+  1830 00001290 807E01FF                    cmp byte [rsi + 1], 0xFF
+  1831 00001294 7506                        jne .has_note_col
+  1832 00001296 807E02FF                    cmp byte [rsi + 2], 0xFF
+  1833 0000129A 7410                        je .draw_left6
+  1834                                  .has_note_col:
+  1835 0000129C 41BAB8D8F000                mov r10d, COL_NOTE
+  1836 000012A2 85ED                        test ebp, ebp
+  1837 000012A4 7406                        jz .n_not_m
+  1838 000012A6 41BA40405000                mov r10d, COL_MUTED
+  1839                                  .n_not_m:
+  1840                                  .draw_left6:
+  1841 000012AC 4489F9                      mov ecx, r15d
+  1842 000012AF 4489EA                      mov edx, r13d
+  1843 000012B2 4C8D05(98480000)            lea r8, [cellBuf]
+  1844 000012B9 41B906000000                mov r9d, 6
+  1845 000012BF E848EEFFFF                  call draw_text
+  1846                                  
+  1847                                      ; Bytes 6..7 (Effekt)
+  1848 000012C4 41BA3C587000                mov r10d, COL_DOT
+  1849 000012CA 807E03FF                    cmp byte [rsi + 3], 0xFF
+  1850 000012CE 7410                        je .draw_fx2
+  1851 000012D0 41BAB848F000                mov r10d, COL_PURPHI
+  1852 000012D6 85ED                        test ebp, ebp
+  1853 000012D8 7406                        jz .draw_fx2
+  1854 000012DA 41BA40405000                mov r10d, COL_MUTED
+  1855                                  .draw_fx2:
+  1856 000012E0 418D4F06                    lea ecx, [r15 + 6]
+  1857 000012E4 4489EA                      mov edx, r13d
+  1858 000012E7 4C8D05(9E480000)            lea r8, [cellBuf + 6]
+  1859 000012EE 41B902000000                mov r9d, 2
+  1860 000012F4 E813EEFFFF                  call draw_text
+  1861                                  
+  1862                                      ; Text im aktiven Cursor-Feld in Schwarz nachzeichnen fuer Kontrast
+  1863 000012F9 443B25(F0000000)            cmp r12d, [editRow]
+  1864 00001300 7540                        jne .ch_d_next
+  1865 00001302 3B1D(F4000000)              cmp ebx, [curCh]
+  1866 00001308 7538                        jne .ch_d_next
+  1867 0000130A 8B05(F8000000)              mov eax, [curSubCol]
+  1868 00001310 488D15(D4020000)            lea rdx, [subColOff]
+  1869 00001317 0FB60C02                    movzx ecx, byte [rdx + rax]
+  1870 0000131B 4C8D05(98480000)            lea r8, [cellBuf]
+  1871 00001322 4901C8                      add r8, rcx
+  1872 00001325 4401F9                      add ecx, r15d
+  1873 00001328 4489EA                      mov edx, r13d
+  1874 0000132B 4C8D0D(D9020000)            lea r9, [subColWid]
+  1875 00001332 450FB60C01                  movzx r9d, byte [r9 + rax]
+  1876 00001337 41BA00000000                mov r10d, COL_BLACK
+  1877 0000133D E8CAEDFFFF                  call draw_text
+  1878                                  
+  1879                                  .ch_d_next:
+  1880 00001342 FFC3                        inc ebx
+  1881 00001344 83FB08                      cmp ebx, NUM_CH
+  1882 00001347 0F8255FEFFFF                jb .ch_draw
+  1883                                  
+  1884 0000134D 41FFC4                      inc r12d
+  1885 00001350 4183FC20                    cmp r12d, PAT_ROWS
+  1886 00001354 0F8203FEFFFF                jb .row_draw
+  1887                                  
+  1888                                      ; Fusszeile aktualisieren
+  1889 0000135A 8B05(D8000000)              mov eax, [curTempo]
+  1890 00001360 488D15(31000000)            lea rdx, [hexTbl]
+  1891 00001367 8A0402                      mov al, [rdx + rax]
+  1892 0000136A 8805(B6000000)              mov [botBar + 8], al
+  1893 00001370 8B05(DC000000)              mov eax, [curOct]
+  1894 00001376 0432                        add al, '2'
+  1895 00001378 8805(BE000000)              mov [botBar + 16], al
+  1896 0000137E 8B05(F4000000)              mov eax, [curCh]
+  1897 00001384 0430                        add al, '0'
+  1898 00001386 8805(C5000000)              mov [botBar + 23], al
+  1899 0000138C 8A05(EC000000)              mov al, [curPat]
+  1900 00001392 4C8D05(CD000000)            lea r8, [botBar + 31]
+  1901 00001399 E898ECFFFF                  call fmt_hex2
+  1902 0000139E 8A05(F0000000)              mov al, [editRow]
+  1903 000013A4 4C8D05(D6000000)            lea r8, [botBar + 40]
+  1904 000013AB E886ECFFFF                  call fmt_hex2
+  1905 000013B0 8A05(E0000000)              mov al, [curInst]
+  1906 000013B6 4C8D05(E0000000)            lea r8, [botBar + 50]
+  1907 000013BD E874ECFFFF                  call fmt_hex2
+  1908 000013C2 8B05(E8000000)              mov eax, [editStep]
+  1909 000013C8 0430                        add al, '0'
+  1910 000013CA 8805(EA000000)              mov [botBar + 60], al
+  1911                                  
+  1912 000013D0 31C9                        xor ecx, ecx
+  1913 000013D2 BA31000000                  mov edx, 49
+  1914 000013D7 4C8D05(AE000000)            lea r8, [botBar]
+  1915 000013DE 41B94F000000                mov r9d, 79
+  1916 000013E4 41BA00F0F000                mov r10d, COL_CYAN
+  1917 000013EA E81DEDFFFF                  call draw_text
+  1918                                  
+  1919                                      ; Offscreen-Puffer ins Fenster uebertragen
+  1920 000013EF 488B0D(10000000)            mov rcx, [hDC]
+  1921 000013F6 31D2                        xor edx, edx
+  1922 000013F8 4531C0                      xor r8d, r8d
+  1923 000013FB 41B9C0030000                mov r9d, WIN_W
+  1924 00001401 48C744242058020000          mov qword [rsp + 0x20], WIN_H
+  1925 0000140A 488B05(18000000)            mov rax, [memDC]
+  1926 00001411 4889442428                  mov [rsp + 0x28], rax
+  1927 00001416 48C744243000000000          mov qword [rsp + 0x30], 0
+  1928 0000141F 48C744243800000000          mov qword [rsp + 0x38], 0
+  1929 00001428 48C74424402000CC00          mov qword [rsp + 0x40], SRCCOPY
+  1930 00001431 E8(00000000)                call BitBlt
+  1931                                  
+  1932 00001436 4883C448                    add rsp, 0x48
+  1933 0000143A 415F                        pop r15
+  1934 0000143C 415E                        pop r14
+  1935 0000143E 415D                        pop r13
+  1936 00001440 415C                        pop r12
+  1937 00001442 5F                          pop rdi
+  1938 00001443 5E                          pop rsi
+  1939 00001444 5D                          pop rbp
+  1940 00001445 5B                          pop rbx
+  1941 00001446 C3                          ret
+  1942                                  
+  1943                                  ; ============================================================================
+  1944                                  ; Start-Demo-Patterns (Pattern 00 und 01) zum direkten Testen vorbelegen
+  1945                                  ; ============================================================================
+  1946                                  init_demo_patterns:
+  1947 00001447 53                          push rbx
+  1948 00001448 55                          push rbp
+  1949 00001449 4154                        push r12
+  1950 0000144B 4155                        push r13
+  1951 0000144D 4883EC28                    sub rsp, 0x28
+  1952                                  
+  1953                                      ; Alle 16 Patterns komplett leeren (0xFF)
+  1954 00001451 488D3D(78080000)            lea rdi, [patterns]
+  1955 00001458 B0FF                        mov al, 0xFF
+  1956 0000145A B900400000                  mov ecx, MAX_PATS * PAT_BYTES
+  1957 0000145F F3AA                        rep stosb
+  1958                                  
+  1959                                      ; Order-Liste initialisieren (00, 01, danach 00)
+  1960 00001461 C605(68060000)00            mov byte [orderList + 0], 0
+  1961 00001468 C605(69060000)01            mov byte [orderList + 1], 1
+  1962 0000146F C705(08010000)0200-         mov dword [orderLen], 2
+  1962 00001477 0000               
+  1963                                  
+  1964                                      ; Pattern 0 und 1 (je 32 Zeilen = 64 Gesamtzeilen) befuellen
+  1965 00001479 4531E4                      xor r12d, r12d              ; globalRow = 0..63
+  1966                                  .id_loop:
+  1967 0000147C 4489E3                      mov ebx, r12d
+  1968 0000147F C1EB05                      shr ebx, 5                  ; pat = 0..1
+  1969 00001482 4589E5                      mov r13d, r12d
+  1970 00001485 4183E51F                    and r13d, 31                ; row = 0..31
+  1971                                  
+  1972                                      ; Akkordzeiger (alle 16 Zeilen ein Akkord)
+  1973 00001489 4489E0                      mov eax, r12d
+  1974 0000148C C1E804                      shr eax, 4
+  1975 0000148F C1E002                      shl eax, 2
+  1976 00001492 488D2D(DE020000)            lea rbp, [demoChords]
+  1977 00001499 4801C5                      add rbp, rax
+  1978                                  
+  1979                                      ; Kanal 0: Kick
+  1980 0000149C 41F7C503000000              test r13d, 3
+  1981 000014A3 7513                        jnz .id_snare
+  1982 000014A5 89D9                        mov ecx, ebx
+  1983 000014A7 4489EA                      mov edx, r13d
+  1984 000014AA 4531C0                      xor r8d, r8d
+  1985 000014AD E8C8EBFFFF                  call get_cell_ptr
+  1986 000014B2 C70000000FFF                mov dword [rax], 0xFF0F0000 ; Note=0, Inst=0, Vol=15, FX=FF
+  1987                                  
+  1988                                  .id_snare:
+  1989 000014B8 4489E8                      mov eax, r13d
+  1990 000014BB 83E007                      and eax, 7
+  1991 000014BE 83F804                      cmp eax, 4
+  1992 000014C1 7516                        jne .id_hat
+  1993 000014C3 89D9                        mov ecx, ebx
+  1994 000014C5 4489EA                      mov edx, r13d
+  1995 000014C8 41B801000000                mov r8d, 1
+  1996 000014CE E8A7EBFFFF                  call get_cell_ptr
+  1997 000014D3 C70010010EFF                mov dword [rax], 0xFF0E0110 ; Note=16, Inst=1, Vol=14
+  1998                                  
+  1999                                  .id_hat:
+  2000 000014D9 41F7C501000000              test r13d, 1
+  2001 000014E0 742A                        jz .id_bass
+  2002 000014E2 89D9                        mov ecx, ebx
+  2003 000014E4 4489EA                      mov edx, r13d
+  2004 000014E7 41B802000000                mov r8d, 2
+  2005 000014ED E888EBFFFF                  call get_cell_ptr
+  2006 000014F2 C60021                      mov byte [rax + 0], 33
+  2007 000014F5 C6400102                    mov byte [rax + 1], 2
+  2008 000014F9 C6400208                    mov byte [rax + 2], 8
+  2009 000014FD 4489E8                      mov eax, r13d
+  2010 00001500 83E003                      and eax, 3
+  2011 00001503 83F803                      cmp eax, 3
+  2012 00001506 7504                        jne .id_bass
+  2013 00001508 C640020C                    mov byte [rax + 2], 12
+  2014                                  
+  2015                                  .id_bass:
+  2016 0000150C 89D9                        mov ecx, ebx
+  2017 0000150E 4489EA                      mov edx, r13d
+  2018 00001511 41B803000000                mov r8d, 3
+  2019 00001517 E85EEBFFFF                  call get_cell_ptr
+  2020 0000151C 8A4D00                      mov cl, [rbp + 0]
+  2021 0000151F C6400103                    mov byte [rax + 1], 3
+  2022 00001523 C640020C                    mov byte [rax + 2], 12
+  2023 00001527 41F7C501000000              test r13d, 1
+  2024 0000152E 740B                        jz .b_lo
+  2025 00001530 80C10C                      add cl, 12
+  2026 00001533 C640020E                    mov byte [rax + 2], 14
+  2027 00001537 C6400301                    mov byte [rax + 3], 0x01    ; Effekt a1
+  2028                                  .b_lo:
+  2029 0000153B 8808                        mov [rax + 0], cl
+  2030                                  
+  2031                                      ; Kanal 4: Arpeggio
+  2032 0000153D 89D9                        mov ecx, ebx
+  2033 0000153F 4489EA                      mov edx, r13d
+  2034 00001542 41B804000000                mov r8d, 4
+  2035 00001548 E82DEBFFFF                  call get_cell_ptr
+  2036 0000154D 4489EA                      mov edx, r13d
+  2037 00001550 83E203                      and edx, 3
+  2038 00001553 4C8D05(EE020000)            lea r8, [demoArpIdx]
+  2039 0000155A 410FB61410                  movzx edx, byte [r8 + rdx]
+  2040 0000155F 8A4C1501                    mov cl, [rbp + 1 + rdx]
+  2041 00001563 8808                        mov [rax + 0], cl
+  2042 00001565 C6400104                    mov byte [rax + 1], 4
+  2043 00001569 C640020A                    mov byte [rax + 2], 10
+  2044                                  
+  2045                                      ; Kanal 5: Lead mit Vibrato (e4)
+  2046 0000156D 41F7C401000000              test r12d, 1
+  2047 00001574 7534                        jnz .id_echo
+  2048 00001576 4489E0                      mov eax, r12d
+  2049 00001579 D1E8                        shr eax, 1
+  2050 0000157B 488D15(F2020000)            lea rdx, [demoLead]
+  2051 00001582 8A0C02                      mov cl, [rdx + rax]
+  2052 00001585 80F9FF                      cmp cl, 0xFF
+  2053 00001588 7420                        je .id_echo
+  2054 0000158A 51                          push rcx
+  2055 0000158B 89D9                        mov ecx, ebx
+  2056 0000158D 4489EA                      mov edx, r13d
+  2057 00001590 41B805000000                mov r8d, 5
+  2058 00001596 E8DFEAFFFF                  call get_cell_ptr
+  2059 0000159B 59                          pop rcx
+  2060 0000159C 8808                        mov [rax + 0], cl
+  2061 0000159E C6400105                    mov byte [rax + 1], 5
+  2062 000015A2 C640020E                    mov byte [rax + 2], 14
+  2063 000015A6 C6400344                    mov byte [rax + 3], 0x44    ; Effekt e4 (Vibrato)
+  2064                                  
+  2065                                  .id_echo:
+  2066 000015AA 418D4424FD                  lea eax, [r12 - 3]
+  2067 000015AF 83E03F                      and eax, 63
+  2068 000015B2 A901000000                  test eax, 1
+  2069 000015B7 752D                        jnz .id_pad
+  2070 000015B9 D1E8                        shr eax, 1
+  2071 000015BB 488D15(F2020000)            lea rdx, [demoLead]
+  2072 000015C2 8A0C02                      mov cl, [rdx + rax]
+  2073 000015C5 80F9FF                      cmp cl, 0xFF
+  2074 000015C8 741C                        je .id_pad
+  2075 000015CA 51                          push rcx
+  2076 000015CB 89D9                        mov ecx, ebx
+  2077 000015CD 4489EA                      mov edx, r13d
+  2078 000015D0 41B806000000                mov r8d, 6
+  2079 000015D6 E89FEAFFFF                  call get_cell_ptr
+  2080 000015DB 59                          pop rcx
+  2081 000015DC 8808                        mov [rax + 0], cl
+  2082 000015DE C6400106                    mov byte [rax + 1], 6
+  2083 000015E2 C6400207                    mov byte [rax + 2], 7
+  2084                                  
+  2085                                  .id_pad:
+  2086 000015E6 41F7C50F000000              test r13d, 15
+  2087 000015ED 751D                        jnz .id_next
+  2088 000015EF 89D9                        mov ecx, ebx
+  2089 000015F1 4489EA                      mov edx, r13d
+  2090 000015F4 41B807000000                mov r8d, 7
+  2091 000015FA E87BEAFFFF                  call get_cell_ptr
+  2092 000015FF 8A4D01                      mov cl, [rbp + 1]
+  2093 00001602 8808                        mov [rax + 0], cl
+  2094 00001604 C6400107                    mov byte [rax + 1], 7
+  2095 00001608 C640020D                    mov byte [rax + 2], 13
+  2096                                  
+  2097                                  .id_next:
+  2098 0000160C 41FFC4                      inc r12d
+  2099 0000160F 4183FC40                    cmp r12d, 64
+  2100 00001613 0F8263FEFFFF                jb .id_loop
+  2101                                  
+  2102 00001619 4883C428                    add rsp, 0x28
+  2103 0000161D 415D                        pop r13
+  2104 0000161F 415C                        pop r12
+  2105 00001621 5D                          pop rbp
+  2106 00001622 5B                          pop rbx
+  2107 00001623 C3                          ret
+  2108                                  
+  2109                                  ; ============================================================================
+  2110                                  ; Programmeinstieg
+  2111                                  ; ============================================================================
+  2112                                  start:
+  2113 00001624 4883EC78                    sub rsp, 0x78
+  2114 00001628 9BDBE3                      finit
+  2115                                  
+  2116                                      ; Grundwerte initialisieren
+  2117 0000162B C705(C0000000)0100-         mov dword [running], 1
+  2117 00001633 0000               
+  2118 00001635 C705(C4000000)0100-         mov dword [dirty], 1
+  2118 0000163D 0000               
+  2119 0000163F C705(D8000000)0500-         mov dword [curTempo], 5
+  2119 00001647 0000               
+  2120 00001649 C705(DC000000)0100-         mov dword [curOct], 1               ; Oktave 3 (C-3) als Start-Klaviatur
+  2120 00001651 0000               
+  2121 00001653 C705(E0000000)0500-         mov dword [curInst], 5              ; Lead als Start-Instrument zum Jammen
+  2121 0000165B 0000               
+  2122 0000165D C705(E4000000)0F00-         mov dword [curVol], 15
+  2122 00001665 0000               
+  2123 00001667 C705(E8000000)0100-         mov dword [editStep], 1
+  2123 0000166F 0000               
+  2124 00001671 C705(14010000)FECA-         mov dword [lfsr], 0x1337CAFE
+  2124 00001679 3713               
+  2125                                  
+  2126                                      ; Zeichenabstaende (dxTbl) und Sinus-Tabelle berechnen
+  2127 0000167B 488D3D(20010000)            lea rdi, [dxTbl]
+  2128 00001682 B80C000000                  mov eax, CHAR_W
+  2129 00001687 B950000000                  mov ecx, 80
+  2130 0000168C F3AB                        rep stosd
+  2131                                  
+  2132 0000168E 488D3D(60020000)            lea rdi, [sinTbl]
+  2133 00001695 31C9                        xor ecx, ecx
+  2134                                  .s_loop:
+  2135 00001697 890D(CC000000)              mov [tmpInt], ecx
+  2136 0000169D DB05(CC000000)              fild dword [tmpInt]
+  2137 000016A3 D80D(5C020000)              fmul dword [f_2pi_256]
+  2138 000016A9 D9FE                        fsin
+  2139 000016AB D80D(60020000)              fmul dword [f_127]
+  2140 000016B1 DB1C8F                      fistp dword [rdi + rcx*4]
+  2141 000016B4 FFC1                        inc ecx
+  2142 000016B6 81F900010000                cmp ecx, 256
+  2143 000016BC 72D9                        jb .s_loop
+  2144                                  
+  2145                                      ; Demo-Patterns vorbelegen und Stimmen-Standardwerte setzen
+  2146 000016BE E884FDFFFF                  call init_demo_patterns
+  2147 000016C3 31DB                        xor ebx, ebx
+  2148                                  .v_init:
+  2149 000016C5 89D8                        mov eax, ebx
+  2150 000016C7 C1E006                      shl eax, 6
+  2151 000016CA 488D3D(78060000)            lea rdi, [voices]
+  2152 000016D1 895C0704                    mov [rdi + rax + 4], ebx
+  2153 000016D5 C74407180F000000            mov dword [rdi + rax + 24], 15
+  2154 000016DD C7440728FFFFFFFF            mov dword [rdi + rax + 40], -1
+  2155 000016E5 FFC3                        inc ebx
+  2156 000016E7 83FB08                      cmp ebx, NUM_CH
+  2157 000016EA 72D9                        jb .v_init
+  2158                                  
+  2159                                      ; Fensterklasse registrieren
+  2160 000016EC 31C9                        xor ecx, ecx
+  2161 000016EE E8(00000000)                call GetModuleHandleA
+  2162 000016F3 488905(00000000)            mov [hInst], rax
+  2163                                  
+  2164 000016FA 31C9                        xor ecx, ecx
+  2165 000016FC BA007F0000                  mov edx, IDC_ARROW
+  2166 00001701 E8(00000000)                call LoadCursorA
+  2167 00001706 4989C4                      mov r12, rax
+  2168                                  
+  2169 00001709 488D3D(28000000)            lea rdi, [wndClass]
+  2170 00001710 C70700000000                mov dword [rdi + 0], 0
+  2171 00001716 488D054CF4FFFF              lea rax, [WndProc]
+  2172 0000171D 48894708                    mov [rdi + 8], rax
+  2173 00001721 488B05(00000000)            mov rax, [hInst]
+  2174 00001728 48894718                    mov [rdi + 24], rax
+  2175 0000172C 4C896728                    mov [rdi + 40], r12
+  2176 00001730 488D05(00000000)            lea rax, [clsName]
+  2177 00001737 48894740                    mov [rdi + 64], rax
+  2178                                  
+  2179 0000173B 4889F9                      mov rcx, rdi
+  2180 0000173E E8(00000000)                call RegisterClassA
+  2181                                  
+  2182                                      ; Exakte Fenstergroesse fuer 960x600 Client-Flaeche ermitteln
+  2183 00001743 C705(70000000)0000-         mov dword [winRect + 0], 0
+  2183 0000174B 0000               
+  2184 0000174D C705(74000000)0000-         mov dword [winRect + 4], 0
+  2184 00001755 0000               
+  2185 00001757 C705(78000000)C003-         mov dword [winRect + 8], WIN_W
+  2185 0000175F 0000               
+  2186 00001761 C705(7C000000)5802-         mov dword [winRect + 12], WIN_H
+  2186 00001769 0000               
+  2187 0000176B 488D0D(70000000)            lea rcx, [winRect]
+  2188 00001772 BA0000CA10                  mov edx, WS_TRACKER
+  2189 00001777 4531C0                      xor r8d, r8d
+  2190 0000177A E8(00000000)                call AdjustWindowRect
+  2191                                  
+  2192 0000177F 8B05(78000000)              mov eax, [winRect + 8]
+  2193 00001785 2B05(70000000)              sub eax, [winRect + 0]
+  2194 0000178B 4189C4                      mov r12d, eax                       ; Gesamtbreite
+  2195 0000178E 8B05(7C000000)              mov eax, [winRect + 12]
+  2196 00001794 2B05(74000000)              sub eax, [winRect + 4]
+  2197 0000179A 4189C5                      mov r13d, eax                       ; Gesamthoehe
+  2198                                  
+  2199 0000179D 31C9                        xor ecx, ecx
+  2200 0000179F 488D15(00000000)            lea rdx, [clsName]
+  2201 000017A6 4C8D05(0F000000)            lea r8, [winTitle]
+  2202 000017AD 41B90000CA10                mov r9d, WS_TRACKER
+  2203 000017B3 48C744242050000000          mov qword [rsp + 0x20], 80
+  2204 000017BC 48C744242832000000          mov qword [rsp + 0x28], 50
+  2205 000017C5 4C89642430                  mov [rsp + 0x30], r12
+  2206 000017CA 4C896C2438                  mov [rsp + 0x38], r13
+  2207 000017CF 48C744244000000000          mov qword [rsp + 0x40], 0
+  2208 000017D8 48C744244800000000          mov qword [rsp + 0x48], 0
+  2209 000017E1 488B05(00000000)            mov rax, [hInst]
+  2210 000017E8 4889442450                  mov [rsp + 0x50], rax
+  2211 000017ED 48C744245800000000          mov qword [rsp + 0x58], 0
+  2212 000017F6 E8(00000000)                call CreateWindowExA
+  2213 000017FB 488905(08000000)            mov [hWnd], rax
+  2214                                  
+  2215 00001802 4889C1                      mov rcx, rax
+  2216 00001805 E8(00000000)                call GetDC
+  2217 0000180A 488905(10000000)            mov [hDC], rax
+  2218                                  
+  2219 00001811 4889C1                      mov rcx, rax
+  2220 00001814 E8(00000000)                call CreateCompatibleDC
+  2221 00001819 488905(18000000)            mov [memDC], rax
+  2222                                  
+  2223 00001820 488B0D(10000000)            mov rcx, [hDC]
+  2224 00001827 BAC0030000                  mov edx, WIN_W
+  2225 0000182C 41B858020000                mov r8d, WIN_H
+  2226 00001832 E8(00000000)                call CreateCompatibleBitmap
+  2227                                  
+  2228 00001837 488B0D(18000000)            mov rcx, [memDC]
+  2229 0000183E 4889C2                      mov rdx, rax
+  2230 00001841 E8(00000000)                call SelectObject
+  2231                                  
+  2232 00001846 B9F5FFFFFF                  mov ecx, -11
+  2233 0000184B BA09000000                  mov edx, 9
+  2234 00001850 4531C0                      xor r8d, r8d
+  2235 00001853 4531C9                      xor r9d, r9d
+  2236 00001856 48C7442420BC020000          mov qword [rsp + 0x20], 700
+  2237 0000185F 48C744242800000000          mov qword [rsp + 0x28], 0
+  2238 00001868 48C744243000000000          mov qword [rsp + 0x30], 0
+  2239 00001871 48C744243800000000          mov qword [rsp + 0x38], 0
+  2240 0000187A 48C744244000000000          mov qword [rsp + 0x40], 0
+  2241 00001883 48C744244800000000          mov qword [rsp + 0x48], 0
+  2242 0000188C 48C744245000000000          mov qword [rsp + 0x50], 0
+  2243 00001895 48C744245803000000          mov qword [rsp + 0x58], 3
+  2244 0000189E 48C744246031000000          mov qword [rsp + 0x60], 49
+  2245 000018A7 488D05(28000000)            lea rax, [fontName]
+  2246 000018AE 4889442468                  mov [rsp + 0x68], rax
+  2247 000018B3 E8(00000000)                call CreateFontA
+  2248                                  
+  2249 000018B8 488B0D(18000000)            mov rcx, [memDC]
+  2250 000018BF 4889C2                      mov rdx, rax
+  2251 000018C2 E8(00000000)                call SelectObject
+  2252                                  
+  2253 000018C7 488B0D(18000000)            mov rcx, [memDC]
+  2254 000018CE BA01000000                  mov edx, TRANSPARENT
+  2255 000018D3 E8(00000000)                call SetBkMode
+  2256                                  
+  2257                                      ; Echtzeit-Audio-Streaming (4 Puffer) oeffnen und starten
+  2258 000018D8 488D0D(20000000)            lea rcx, [hWaveOut]
+  2259 000018DF BAFFFFFFFF                  mov edx, -1
+  2260 000018E4 4C8D05(12030000)            lea r8, [wfx]
+  2261 000018EB 4531C9                      xor r9d, r9d
+  2262 000018EE 48C744242000000000          mov qword [rsp + 0x20], 0
+  2263 000018F7 48C744242800000000          mov qword [rsp + 0x28], 0
+  2264 00001900 E8(00000000)                call waveOutOpen
+  2265                                  
+  2266 00001905 31DB                        xor ebx, ebx
+  2267                                  .au_init:
+  2268 00001907 89D8                        mov eax, ebx
+  2269 00001909 6BC030                      imul eax, 48
+  2270 0000190C 488D35(B0480000)            lea rsi, [waveHdrs]
+  2271 00001913 4801C6                      add rsi, rax
+  2272                                  
+  2273 00001916 89D8                        mov eax, ebx
+  2274 00001918 69C000080000                imul eax, BUF_BYTES
+  2275 0000191E 488D3D(70490000)            lea rdi, [audioBufs]
+  2276 00001925 4801C7                      add rdi, rax
+  2277                                  
+  2278 00001928 48893E                      mov [rsi + 0], rdi
+  2279 0000192B C7460800080000              mov dword [rsi + 8], BUF_BYTES
+  2280                                  
+  2281 00001932 488B0D(20000000)            mov rcx, [hWaveOut]
+  2282 00001939 4889F2                      mov rdx, rsi
+  2283 0000193C 41B830000000                mov r8d, 48
+  2284 00001942 E8(00000000)                call waveOutPrepareHeader
+  2285                                  
+  2286 00001947 488B0D(20000000)            mov rcx, [hWaveOut]
+  2287 0000194E 4889F2                      mov rdx, rsi
+  2288 00001951 41B830000000                mov r8d, 48
+  2289 00001957 E8(00000000)                call waveOutWrite
+  2290                                  
+  2291 0000195C FFC3                        inc ebx
+  2292 0000195E 83FB04                      cmp ebx, BUF_COUNT
+  2293 00001961 72A4                        jb .au_init
+  2294                                  
+  2295                                      ; ------------------------------------------------------------------------
+  2296                                      ; Hauptschleife: Events -> Audio-Streaming -> Bildschirm-Refresh
+  2297                                      ; ------------------------------------------------------------------------
+  2298                                  main_loop:
+  2299                                  .msg_drain:
+  2300 00001963 488D0D(90000000)            lea rcx, [msg]
+  2301 0000196A 31D2                        xor edx, edx
+  2302 0000196C 4531C0                      xor r8d, r8d
+  2303 0000196F 4531C9                      xor r9d, r9d
+  2304 00001972 48C744242001000000          mov qword [rsp + 0x20], 1           ; PM_REMOVE
+  2305 0000197B E8(00000000)                call PeekMessageA
+  2306 00001980 85C0                        test eax, eax
+  2307 00001982 741A                        jz .msg_done
+  2308 00001984 488D0D(90000000)            lea rcx, [msg]
+  2309 0000198B E8(00000000)                call TranslateMessage
+  2310 00001990 488D0D(90000000)            lea rcx, [msg]
+  2311 00001997 E8(00000000)                call DispatchMessageA
+  2312 0000199C EBC5                        jmp .msg_drain
+  2313                                  .msg_done:
+  2314                                  
+  2315 0000199E 833D(C0000000)00            cmp dword [running], 0
+  2316 000019A5 7444                        je .exit_prog
+  2317                                  
+  2318                                      ; Audio-Puffer bei Bedarf nachfuellen
+  2319 000019A7 E889ECFFFF                  call pump_audio
+  2320                                  
+  2321                                      ; Anzeige bei Aenderung oder alle 25 ms (fuer VU-Meter) aktualisieren
+  2322 000019AC E8(00000000)                call GetTickCount
+  2323 000019B1 89C1                        mov ecx, eax
+  2324 000019B3 2B05(C8000000)              sub eax, [lastDraw]
+  2325 000019B9 83F819                      cmp eax, 25
+  2326 000019BC 7309                        jae .do_draw
+  2327 000019BE 833D(C4000000)00            cmp dword [dirty], 0
+  2328 000019C5 7415                        je .skip_draw
+  2329                                  .do_draw:
+  2330 000019C7 890D(C8000000)              mov [lastDraw], ecx
+  2331 000019CD C705(C4000000)0000-         mov dword [dirty], 0
+  2331 000019D5 0000               
+  2332 000019D7 E870F2FFFF                  call draw_screen
+  2333                                  .skip_draw:
+  2334                                  
+  2335 000019DC B904000000                  mov ecx, 4
+  2336 000019E1 E8(00000000)                call Sleep
+  2337 000019E6 E978FFFFFF                  jmp main_loop
+  2338                                  
+  2339                                  .exit_prog:
+  2340 000019EB 488B0D(20000000)            mov rcx, [hWaveOut]
+  2341 000019F2 E8(00000000)                call waveOutReset
+  2342 000019F7 488B0D(20000000)            mov rcx, [hWaveOut]
+  2343 000019FE E8(00000000)                call waveOutClose
+  2344 00001A03 31C9                        xor ecx, ecx
+  2345 00001A05 E8(00000000)                call ExitProcess
