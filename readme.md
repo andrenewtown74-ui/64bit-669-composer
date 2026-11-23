@@ -72,39 +72,9 @@ Ein nativer 64-Bit-Windows-Musiktracker im Stil des klassischen DOS-Trackers **C
 .\nasm.exe -f win64 c669main.asm -o c669main.obj
 .\GoLink.exe /entry start /fo c669main.exe c669main.obj kernel32.dll user32.dll gdi32.dll winmm.dll comdlg32.dll
 .\c669main.exe
-
-
-
----
-
-## Projektstruktur
-
-| Datei | Beschreibung |
-|---|---|
-| `c669main.asm` | Haupteinstiegspunkt, Fenstererstellung, Borderless-Fullscreen-Logik, `WndProc` (inkl. Maus-Drag) und Hauptschleife |
-| `c669_defs.inc` | Konstanten, Windows-API-Importe (inkl. `waveIn`), `.data`-Tabellen, Hilfetexte und `.bss`-Speicherlayout (inkl. 64-Slot-Speicher & Original-Sample-Puffer) |
-| `c669_audio.inc` | 8-Kanal-Stereo-Mixer (Synth + 64-Slot-PCM), alle 669-Effekte (`a`–`f`) und WinMM-Pufferverwaltung |
-| `c669_io.inc` | `.669`-Parser/Exporter, WAV-Importer, Slot-Original-Backup und Löschroutinen mit Sicherheitsabfrage |
-| `c669_ui.inc` | GDI-Renderer, Scroll-Logik, Tastatur-, Maus-, Copy/Paste-, Moduswechsel- und Hilfe-Overlay-Steuerung |
-| `c669_samped.inc` | Sample- & Instrument-Editor (Wellenform, ziehbare Loop-Marker, `waveIn`-Streaming mit Gerätewahl & Live-VU, destruktive FX, zerstörungsfreie Sample-FX und Live-ADSR-Synth pro Slot) |
-| `c669_demo.inc` | 320×200-Framebuffer-Visualizer (Plasma, 3D-Tunnel, Rasterbars, Oszilloskop, Equalizer, Scroller) |
-
----
-
-## Build & Voraussetzungen
-
-### Benötigte Werkzeuge (Windows x64)
-* **NASM** (`nasm.exe`, 64-Bit-Assembler)
-* **GoLink** (`GoLink.exe`, Windows-Linker ohne CRT-Abhängigkeit)
-
-### Kompilieren und Linken (PowerShell)
-```powershell
-.\nasm.exe -f win64 c669main.asm -o c669main.obj
-.\GoLink.exe /entry start /fo c669main.exe c669main.obj kernel32.dll user32.dll gdi32.dll winmm.dll comdlg32.dll
-.\c669main.exe
-
 ```
 
+---
 
 ## Bedienung
 
@@ -166,18 +136,14 @@ Ein nativer 64-Bit-Windows-Musiktracker im Stil des klassischen DOS-Trackers **C
 ### Steuerung im Sample- & Instrument-Editor (`[I]` / `Strg + E`)
 
 * **Wellenform:**
-* Bei aktivem Loop lassen sich der weiße Loop-Start-Strich (**`L`** oben) und der pinke Loop-Ende-Strich (**`E`** unten) direkt mit gedrückter linker Maustaste greifen und verschieben.
-* Außerhalb der Loop-Marker setzt ein Linksklick den Auswahl-Start und ein Rechtsklick das Auswahl-Ende (`Shift + Links/Rechts` setzt Loop-Start/-Ende direkt an die Klickposition).
-
-
+  * Bei aktivem Loop lassen sich der weiße Loop-Start-Strich (**`L`** oben) und der pinke Loop-Ende-Strich (**`E`** unten) direkt mit gedrückter linker Maustaste greifen und verschieben.
+  * Außerhalb der Loop-Marker setzt ein Linksklick den Auswahl-Start und ein Rechtsklick das Auswahl-Ende (`Shift + Links/Rechts` setzt Loop-Start/-Ende direkt an die Klickposition).
 * **Aktionsleiste:** `[WAV Laden]`, `[REC Start]` / `[REC Stop!]`, `[Vorhoeren]`, `[StopTon]`, `[Loop:ON]` / `[LoopOFF]`, `[Sel->Lp]` (Auswahl als Loop übernehmen), `[Trim]`, `[Syn]` (Slot auf Standard-Synth/leer zurücksetzen).
 * **Effektleiste (`FX`):** `[Normalis]`, `[Fade In]`, `[FadeOut]`, `[Reverse]`, `[Boost +]`, `[HalbLen]`, `[SelAll]`.
 * **Instrument-Designer (9 Live-Slider pro Slot):**
-* **Slider (`Attack` bis `Lautstaerk`):** Direkt im Balken klicken und mit gedrückter linker Maustaste ziehen oder über `[-]`/`[+]` feinjustieren. Bei aktivem `[LIVE:AN ]` wird das Ergebnis sofort gerendert und beim Loslassen vorgehört.
-* **Modus & Steuerung:** `[MOD:SYNTH ]` / `[MOD:SAMPLE]` wechselt zwischen Oszillator-Synthese und zerstörungsfreier Bearbeitung geladener Samples; `[LIVE:AN ]` schaltet Sofort-Rendering um; `[AUTOLP:AN ]` setzt automatische Sustain-Loops; `[-> Slot]` rendert manuell; `[Slot -]` / `[Slot +]` wechselt den Slot; `[Orig ]` stellt bei geladenen/aufgenommenen Samples das unbearbeitete Original wieder her.
-* **Wellenform & Presets:** Im `MOD:SYNTH` lassen sich `0:Sinus` bis `4:Rausc`, `Pulsbreite` (Links-/Rechtsklick) und die 6 Presets (`808Kick` bis `LaserFX`) direkt anwählen.
-
-
+  * **Slider (`Attack` bis `Lautstaerk`):** Direkt im Balken klicken und mit gedrückter linker Maustaste ziehen oder über `[-]`/`[+]` feinjustieren. Bei aktivem `[LIVE:AN ]` wird das Ergebnis sofort gerendert und beim Loslassen vorgehört.
+  * **Modus & Steuerung:** `[MOD:SYNTH ]` / `[MOD:SAMPLE]` wechselt zwischen Oszillator-Synthese und zerstörungsfreier Bearbeitung geladener Samples; `[LIVE:AN ]` schaltet Sofort-Rendering um; `[AUTOLP:AN ]` setzt automatische Sustain-Loops; `[-> Slot]` rendert manuell; `[Slot -]` / `[Slot +]` wechselt den Slot; `[Orig ]` stellt bei geladenen/aufgenommenen Samples das unbearbeitete Original wieder her.
+  * **Wellenform & Presets:** Im `MOD:SYNTH` lassen sich `0:Sinus` bis `4:Rausc`, `Pulsbreite` (Links-/Rechtsklick) und die 6 Presets (`808Kick` bis `LaserFX`) direkt anwählen.
 * **Aufnahmeleiste (Zeile 47):** `[<]` / `[>]` oder Klick auf den Gerätenamen wählt das Eingabegerät (`Mic:`), daneben laufen der 3-Zonen-Live-VU-Pegelbalken mit Peak-Hold und die Aufnahmezeit (`0.0/5.9` s).
 * **Slot-Wechsel:** Mausrad, `F3`/`F4`, Kopfzeile (`Slot:XX`), `[Slot -]` / `[Slot +]` oder Fußzeile.
 
@@ -193,7 +159,3 @@ Ein nativer 64-Bit-Windows-Musiktracker im Stil des klassischen DOS-Trackers **C
 | `dX` | Frequency Adjust | Einmalige Frequenzverschiebung / Detune (`d0` stellt Basis-Tonhöhe wieder her) |
 | `eX` | Vibrato | Sinusförmige Tonhöhenmodulation um die Basis-Tonhöhe (`e0` beendet Vibrato) |
 | `fX` | Set Tempo | Setzt das Abspieltempo sofort auf `1..F` |
-
-```
-
-```
