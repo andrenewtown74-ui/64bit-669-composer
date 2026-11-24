@@ -51,7 +51,7 @@ set_status:
     pop rsi
     ret
 
-; Sample-Scroll-Fenster (12 Zeilen) auf curInst (0..63) ausrichten
+; Sample-Scroll-Fenster (sampVisRows Zeilen) auf curInst (0..63) ausrichten
 sync_samp_scroll:
     mov eax, [curInst]
     mov ecx, [sampViewTop]
@@ -60,15 +60,17 @@ sync_samp_scroll:
     mov [sampViewTop], eax
     ret
 .chk_bot:
-    add ecx, 11
+    mov edx, [sampVisRows]
+    dec edx
+    add ecx, edx
     cmp eax, ecx
     jbe .ok
-    sub eax, 11
+    sub eax, edx
     mov [sampViewTop], eax
 .ok:
     ret
 
-; Pattern-Scroll-Fenster (32 Zeilen) auf editRow (0..63) ausrichten
+; Pattern-Scroll-Fenster (patViewRows Zeilen) auf editRow (0..63) ausrichten
 sync_pat_scroll:
     mov eax, [editRow]
     mov ecx, [patViewTop]
@@ -77,10 +79,12 @@ sync_pat_scroll:
     mov [patViewTop], eax
     ret
 .sps_bot:
-    add ecx, VIEW_ROWS - 1
+    mov edx, [patViewRows]
+    dec edx
+    add ecx, edx
     cmp eax, ecx
     jbe .sps_ok
-    sub eax, VIEW_ROWS - 1
+    sub eax, edx
     mov [patViewTop], eax
 .sps_ok:
     ret
@@ -94,10 +98,12 @@ sync_play_scroll:
     mov [ordViewTop], eax
     jmp .spr_chk
 .spo_bot:
-    add ecx, 11
+    mov edx, [ordVisRows]
+    dec edx
+    add ecx, edx
     cmp eax, ecx
     jbe .spr_chk
-    sub eax, 11
+    sub eax, edx
     mov [ordViewTop], eax
 .spr_chk:
     mov eax, [curPat]
@@ -110,17 +116,21 @@ sync_play_scroll:
     mov [patViewTop], eax
     ret
 .spr_bot:
-    add ecx, VIEW_ROWS - 1
+    mov edx, [patViewRows]
+    dec edx
+    add ecx, edx
     cmp eax, ecx
     jbe .sps_done
-    sub eax, VIEW_ROWS - 1
+    sub eax, edx
     mov [patViewTop], eax
 .sps_done:
     ret
 
-; Rechteck in memDC fuellen: ECX=x, EDX=y, R8D=w, R9D=h, R10D=COLORREF
+; Rechteck in memDC fuellen: ECX=x, EDX=y, R8D=w, R9D=h, R10D=COLORREF (inkl. drawOffX/Y)
 fill_rect:
     sub rsp, 0x48
+    add ecx, [drawOffX]
+    add edx, [drawOffY]
     mov [tmpRect + 0], ecx
     mov [tmpRect + 4], edx
     add ecx, r8d
@@ -150,6 +160,8 @@ draw_text:
     sub rsp, 0x68
     imul ecx, CHAR_W
     imul edx, CHAR_H
+    add ecx, [drawOffX]
+    add edx, [drawOffY]
     mov [rsp + 0x40], ecx
     mov [rsp + 0x44], edx
     mov [rsp + 0x48], r8
@@ -837,8 +849,9 @@ handle_keydown:
     cmp ebx, VK_UP
     jne .chk_down
     mov eax, [editRow]
+    test eax, eax
+    jz .k_done
     dec eax
-    and eax, PAT_ROWS - 1
     mov [editRow], eax
     call sync_pat_scroll
     jmp .k_done
@@ -847,8 +860,9 @@ handle_keydown:
     cmp ebx, VK_DOWN
     jne .chk_home
     mov eax, [editRow]
+    cmp eax, PAT_ROWS - 1
+    jae .k_done
     inc eax
-    and eax, PAT_ROWS - 1
     mov [editRow], eax
     call sync_pat_scroll
     jmp .k_done
@@ -960,8 +974,9 @@ handle_keydown:
     cmp ebx, VK_BACK
     jne .chk_edit_input
     mov eax, [editRow]
+    test eax, eax
+    jz .k_done
     dec eax
-    and eax, PAT_ROWS - 1
     mov [editRow], eax
     call sync_pat_scroll
     mov ecx, [curPat]
@@ -1101,7 +1116,10 @@ handle_keydown:
 .adv_step:
     mov eax, [editRow]
     add eax, [editStep]
-    and eax, PAT_ROWS - 1
+    cmp eax, PAT_ROWS - 1
+    jbe .adv_ok
+    mov eax, PAT_ROWS - 1
+.adv_ok:
     mov [editRow], eax
     call sync_pat_scroll
 
@@ -1113,41 +1131,37 @@ handle_keydown:
     ret
 
 ; ============================================================================
-; Client-Koordinaten (ECX=x, EDX=y) in 80x50-Raster + mousePxX (0..959) umrechnen
+; Client-Koordinaten (ECX=x, EDX=y) in aktives Raster + mousePxX umrechnen
 ; ============================================================================
 mouse_to_grid:
     mov r9d, edx
-    cmp dword [isFullscreen], 0
-    je .mtg_win
+    cmp dword [sampEdMode], 0
+    je .mtg_ui
+    cmp dword [wideMode], 0
+    je .mtg_samped
 
-    sub ecx, [dispX]
+.mtg_ui:
+    sub ecx, [uiOffX]
     js .mtg_out
-    cmp ecx, [dispW]
+    mov eax, [layoutCols]
+    imul eax, CHAR_W
+    cmp ecx, eax
     jae .mtg_out
-    sub r9d, [dispY]
+
+    sub r9d, [uiOffY]
     js .mtg_out
-    cmp r9d, [dispH]
+    mov eax, [gridRows]
+    imul eax, CHAR_H
+    cmp r9d, eax
     jae .mtg_out
-
-    mov eax, ecx
-    imul eax, WIN_W
-    xor edx, edx
-    div dword [dispW]
-    mov ecx, eax
-
-    mov eax, r9d
-    imul eax, WIN_H
-    xor edx, edx
-    div dword [dispH]
-    mov r9d, eax
     jmp .mtg_div
 
-.mtg_win:
-    test ecx, ecx
+.mtg_samped:
+    sub ecx, [seOffX]
     js .mtg_out
     cmp ecx, WIN_W
     jae .mtg_out
-    test r9d, r9d
+    sub r9d, [seOffY]
     js .mtg_out
     cmp r9d, WIN_H
     jae .mtg_out
@@ -1233,18 +1247,18 @@ handle_mouse_down:
     jmp .md_done
 
 .md_chk_upper:
-    cmp r13d, 2
-    jb .md_chk_hdr
-    cmp r13d, 13
-    ja .md_chk_hdr
-
-    ; Sample-Liste (Spalten 1..33)
-    cmp r12d, 1
-    jb .md_chk_ord
-    cmp r12d, 33
-    ja .md_chk_ord
+    ; Sample-Liste (dynamische Position: sampListX..+32, sampListY..+sampVisRows-1)
     mov eax, r13d
-    sub eax, 2
+    sub eax, [sampListY]
+    js .md_chk_ord
+    cmp eax, [sampVisRows]
+    jae .md_chk_ord
+    mov edx, r12d
+    sub edx, [sampListX]
+    js .md_chk_ord
+    cmp edx, 33
+    jae .md_chk_ord
+
     add eax, [sampViewTop]
     cmp eax, MAX_SAMPS
     jae .md_done
@@ -1266,13 +1280,18 @@ handle_mouse_down:
     jmp .md_done
 
 .md_chk_ord:
-    ; Rechte Order-Liste (Spalten 72..78)
-    cmp r12d, 72
-    jb .md_done
-    cmp r12d, 78
-    ja .md_done
+    ; Order-Liste (dynamische Position: ordListX..+6, ordListY..+ordVisRows-1)
     mov eax, r13d
-    sub eax, 2
+    sub eax, [ordListY]
+    js .md_chk_hdr
+    cmp eax, [ordVisRows]
+    jae .md_chk_hdr
+    mov edx, r12d
+    sub edx, [ordListX]
+    js .md_chk_hdr
+    cmp edx, 7
+    jae .md_chk_hdr
+
     add eax, [ordViewTop]
     cmp eax, [orderLen]
     jae .md_done
@@ -1299,8 +1318,8 @@ handle_mouse_down:
     jmp .md_done
 
 .md_chk_hdr:
-    ; Kanal-Koepfe On/Off (Zeile 15)
-    cmp r13d, 15
+    ; Kanal-Koepfe On/Off (Zeile patHdrRow, Spalten 8..79)
+    cmp r13d, [patHdrRow]
     jne .md_chk_pat
     cmp r12d, 8
     jb .md_done
@@ -1325,14 +1344,15 @@ handle_mouse_down:
     jmp .md_done
 
 .md_chk_pat:
-    ; Pattern-Bereich (Zeilen 16..47)
-    cmp r13d, 16
-    jb .md_chk_clr
-    cmp r13d, 47
-    ja .md_chk_clr
-
+    ; Pattern-Bereich (Zeilen patStartRow .. patStartRow + patViewRows - 1, Spalten 0..79)
+    cmp r12d, 80
+    jae .md_chk_clr
     mov eax, r13d
-    sub eax, 16
+    sub eax, [patStartRow]
+    js .md_chk_clr
+    cmp eax, [patViewRows]
+    jae .md_chk_clr
+
     add eax, [patViewTop]
     cmp eax, PAT_ROWS
     jae .md_done
@@ -1389,8 +1409,8 @@ handle_mouse_down:
     jmp .md_done
 
 .md_chk_clr:
-    ; Aktions-Leiste (Zeile 48, nur Linksklick): Loeschen + Copy/Paste
-    cmp r13d, 48
+    ; Aktions-Leiste (Zeile clrBarRow, nur Linksklick): Loeschen + Copy/Paste
+    cmp r13d, [clrBarRow]
     jne .md_chk_bot
     test ebx, ebx
     jnz .md_done
@@ -1461,8 +1481,8 @@ handle_mouse_down:
     jmp .md_done
 
 .md_chk_bot:
-    ; Fusszeile (Zeile 49): Werte (L=+/R=-), Play, Brk, [I], [D] und [?]
-    cmp r13d, 49
+    ; Fusszeile (Zeile botBarRow): Werte (L=+/R=-), Play, Brk, [I], [D] und [?]
+    cmp r13d, [botBarRow]
     jne .md_done
 
     ; Hilfe [?] (Spalten 75..77)
@@ -1748,13 +1768,18 @@ handle_mouse_wheel:
     mov r12d, eax
     mov r13d, edx
 
-    cmp r13d, 2
-    jb .mw_pat
-    cmp r13d, 13
-    ja .mw_pat
+    ; Mausrad ueber Sample-Liste?
+    mov eax, r13d
+    sub eax, [sampListY]
+    js .mw_chk_ord
+    cmp eax, [sampVisRows]
+    jae .mw_chk_ord
+    mov edx, r12d
+    sub edx, [sampListX]
+    js .mw_chk_ord
+    cmp edx, 33
+    jae .mw_chk_ord
 
-    cmp r12d, 34
-    ja .mw_chk_ord
     mov eax, [sampViewTop]
     add eax, ebx
     add eax, ebx
@@ -1762,16 +1787,28 @@ handle_mouse_wheel:
     jns .mws_hi
     xor eax, eax
 .mws_hi:
-    cmp eax, MAX_SAMPS - 12
+    mov ecx, MAX_SAMPS
+    sub ecx, [sampVisRows]
+    cmp eax, ecx
     jbe .mws_st
-    mov eax, MAX_SAMPS - 12
+    mov eax, ecx
 .mws_st:
     mov [sampViewTop], eax
     jmp .mw_done
 
 .mw_chk_ord:
-    cmp r12d, 71
-    jb .mw_pat
+    ; Mausrad ueber Order-Liste?
+    mov eax, r13d
+    sub eax, [ordListY]
+    js .mw_pat
+    cmp eax, [ordVisRows]
+    jae .mw_pat
+    mov edx, r12d
+    sub edx, [ordListX]
+    js .mw_pat
+    cmp edx, 7
+    jae .mw_pat
+
     mov eax, [ordViewTop]
     add eax, ebx
     add eax, ebx
@@ -1779,9 +1816,11 @@ handle_mouse_wheel:
     jns .mwo_hi
     xor eax, eax
 .mwo_hi:
-    cmp eax, MAX_ORDERS - 12
+    mov ecx, MAX_ORDERS
+    sub ecx, [ordVisRows]
+    cmp eax, ecx
     jbe .mwo_st
-    mov eax, MAX_ORDERS - 12
+    mov eax, ecx
 .mwo_st:
     mov [ordViewTop], eax
     jmp .mw_done
@@ -1859,28 +1898,60 @@ format_cell_text:
     ret
 
 ; ============================================================================
-; Hilfe-Overlay mittig in memDC zeichnen (Spalten 7..72, Zeilen 5..41, 35 Zeilen)
+; Hilfe-Overlay mittig in memDC zeichnen (dynamisch zentriert, 66x37 Zeichen)
 ; ============================================================================
 draw_help_overlay:
     push rbx
+    push r12
+    push r13
     sub rsp, 0x20
 
-    mov ecx, 7 * CHAR_W
-    mov edx, 5 * CHAR_H
+    cmp dword [sampEdMode], 0
+    je .hl_trk
+    cmp dword [wideMode], 0
+    jne .hl_trk
+    mov r12d, 7
+    mov r13d, 5
+    jmp .hl_box
+.hl_trk:
+    mov r12d, [layoutCols]
+    sub r12d, 66
+    jns .hl_x_ok
+    xor r12d, r12d
+.hl_x_ok:
+    shr r12d, 1
+    mov r13d, [gridRows]
+    sub r13d, 37
+    jns .hl_y_ok
+    xor r13d, r13d
+.hl_y_ok:
+    shr r13d, 1
+
+.hl_box:
+    mov ecx, r12d
+    imul ecx, CHAR_W
+    mov edx, r13d
+    imul edx, CHAR_H
     mov r8d, 66 * CHAR_W
     mov r9d, 37 * CHAR_H
     mov r10d, COL_HDR_ON
     call fill_rect
 
-    mov ecx, 7 * CHAR_W + 3
-    mov edx, 5 * CHAR_H + 3
+    mov ecx, r12d
+    imul ecx, CHAR_W
+    add ecx, 3
+    mov edx, r13d
+    imul edx, CHAR_H
+    add edx, 3
     mov r8d, 66 * CHAR_W - 6
     mov r9d, 37 * CHAR_H - 6
     mov r10d, COL_BLACK
     call fill_rect
 
-    mov ecx, 8 * CHAR_W
-    mov edx, 6 * CHAR_H
+    lea ecx, [r12 + 1]
+    imul ecx, CHAR_W
+    lea edx, [r13 + 1]
+    imul edx, CHAR_H
     mov r8d, 64 * CHAR_W
     mov r9d, CHAR_H
     mov r10d, COL_PURP
@@ -1919,8 +1990,9 @@ draw_help_overlay:
     shl eax, 6
     lea r8, [helpLines]
     add r8, rax
-    mov ecx, 8
-    lea edx, [rbx + 6]
+    lea ecx, [r12 + 1]
+    lea edx, [r13 + 1]
+    add edx, ebx
     mov r9d, 64
     call draw_text
 
@@ -1929,6 +2001,8 @@ draw_help_overlay:
     jb .hl_loop
 
     add rsp, 0x20
+    pop r13
+    pop r12
     pop rbx
     ret
 
@@ -1960,6 +2034,54 @@ draw_screen:
 .ds_chk_samped:
     cmp dword [sampEdMode], 0
     je .ds_tracker
+
+    mov dword [drawOffX], 0
+    mov dword [drawOffY], 0
+    cmp dword [wideMode], 0
+    je .se_classic_bg
+
+    xor ecx, ecx
+    xor edx, edx
+    mov r8d, [curWinW]
+    mov r9d, [curWinH]
+    mov r10d, COL_BG
+    call fill_rect
+    mov eax, [uiOffX]
+    mov [drawOffX], eax
+    mov eax, [uiOffY]
+    mov [drawOffY], eax
+    jmp .se_call_draw
+
+.se_classic_bg:
+    xor ecx, ecx
+    xor edx, edx
+    mov r8d, [curWinW]
+    mov r9d, [curWinH]
+    mov r10d, 0x00402A14
+    call fill_rect
+
+    mov ecx, [seOffX]
+    cmp ecx, 2
+    jae .se_frame
+    mov edx, [seOffY]
+    cmp edx, 2
+    jb .se_no_frame
+.se_frame:
+    mov ecx, [seOffX]
+    sub ecx, 2
+    mov edx, [seOffY]
+    sub edx, 2
+    mov r8d, WIN_W + 4
+    mov r9d, WIN_H + 4
+    mov r10d, COL_HDR_ON
+    call fill_rect
+.se_no_frame:
+    mov eax, [seOffX]
+    mov [drawOffX], eax
+    mov eax, [seOffY]
+    mov [drawOffY], eax
+
+.se_call_draw:
     call draw_samped_screen
     cmp dword [showHelp], 0
     je .ds_output
@@ -1967,12 +2089,19 @@ draw_screen:
     jmp .ds_output
 
 .ds_tracker:
+    mov dword [drawOffX], 0
+    mov dword [drawOffY], 0
     xor ecx, ecx
     xor edx, edx
-    mov r8d, WIN_W
-    mov r9d, WIN_H
+    mov r8d, [curWinW]
+    mov r9d, [curWinH]
     mov r10d, COL_BG
     call fill_rect
+
+    mov eax, [uiOffX]
+    mov [drawOffX], eax
+    mov eax, [uiOffY]
+    mov [drawOffY], eax
 
     cmp dword [songMode], 0
     je .m_pat
@@ -1990,14 +2119,84 @@ draw_screen:
     mov r10d, COL_CYAN
     call draw_text
 
-    mov ecx, 4 * CHAR_W
-    mov edx, 2 * CHAR_H
+    ; Widescreen-Seitenleiste: Kopfzeile, Trennlinien, Spaltenkoepfe und Hinweise
+    cmp dword [wideMode], 0
+    je .no_wide_hdr
+
+    mov ecx, 82
+    xor edx, edx
+    lea r8, [wideTopInfo]
+    mov r9d, 42
+    mov r10d, COL_TEAL
+    call draw_text
+
+    mov ecx, 80 * CHAR_W + 5
+    mov edx, 1 * CHAR_H
+    mov r8d, 2
+    mov r9d, [clrBarRow]
+    dec r9d
+    imul r9d, CHAR_H
+    mov r10d, COL_HDR_ON
+    call fill_rect
+
+    mov ecx, 82
+    mov edx, 1
+    lea r8, [wideSmpHdr]
+    mov r9d, 33
+    mov r10d, COL_CYAN
+    call draw_text
+
+    mov ecx, 115 * CHAR_W + 6
+    mov edx, 1 * CHAR_H
+    mov r8d, 2
+    mov r9d, [clrBarRow]
+    dec r9d
+    imul r9d, CHAR_H
+    mov r10d, COL_HDR_ON
+    call fill_rect
+
+    mov ecx, 117
+    mov edx, 1
+    lea r8, [wideOrdHdr]
+    mov r9d, 7
+    mov r10d, COL_CYAN
+    call draw_text
+
+    mov ecx, 82
+    mov edx, [clrBarRow]
+    lea r8, [wideHint1]
+    mov r9d, 42
+    mov r10d, COL_TEAL
+    call draw_text
+
+    mov ecx, 82
+    mov edx, [botBarRow]
+    lea r8, [wideHint2]
+    mov r9d, 42
+    mov r10d, COL_TEAL
+    call draw_text
+.no_wide_hdr:
+
+    ; Schwarzes Hintergrundfeld fuer Sample-Namen (sampListX+3, sampListY, sampVisRows)
+    mov ecx, [sampListX]
+    add ecx, 3
+    imul ecx, CHAR_W
+    mov edx, [sampListY]
+    imul edx, CHAR_H
     mov r8d, 12 * CHAR_W
-    mov r9d, 12 * CHAR_H
+    mov r9d, [sampVisRows]
+    imul r9d, CHAR_H
     mov r10d, COL_BLACK
     call fill_rect
 
-    mov ecx, 35 * CHAR_W
+    ; Title-Box (Classic: Spalte 35, Widescreen: Spalte 1, jeweils Zeilen 2..4)
+    mov r14d, 35
+    cmp dword [wideMode], 0
+    je .tb_pos
+    mov r14d, 1
+.tb_pos:
+    mov ecx, r14d
+    imul ecx, CHAR_W
     mov edx, 2 * CHAR_H
     mov r8d, 36 * CHAR_W
     mov r9d, 3 * CHAR_H
@@ -2006,7 +2205,7 @@ draw_screen:
 
     xor ebx, ebx
 .t_loop:
-    mov ecx, 35
+    mov ecx, r14d
     lea edx, [rbx + 2]
     mov eax, ebx
     imul eax, 36
@@ -2019,9 +2218,11 @@ draw_screen:
     cmp ebx, 3
     jb .t_loop
 
+    ; Sample-Liste zeichnen (sampVisRows Zeilen ab sampViewTop)
     xor ebx, ebx
-.up_loop:
-    lea r12d, [rbx + 2]
+.samp_loop:
+    mov r12d, ebx
+    add r12d, [sampListY]
     mov ebp, ebx
     add ebp, [sampViewTop]
 
@@ -2038,7 +2239,7 @@ draw_screen:
     jne .si_col
     mov r10d, COL_CYAN
 .si_col:
-    mov ecx, 1
+    mov ecx, [sampListX]
     mov edx, r12d
     lea r8, [lineBuf]
     mov r9d, 2
@@ -2058,7 +2259,8 @@ draw_screen:
     jne .sn_col
     mov r10d, COL_WHITE
 .sn_col:
-    mov ecx, 4
+    mov ecx, [sampListX]
+    add ecx, 3
     mov edx, r12d
     mov r9d, 12
     call draw_text
@@ -2080,15 +2282,26 @@ draw_screen:
     lea r8, [lineBuf + 12]
     call fmt_hex5
 
-    mov ecx, 17
+    mov ecx, [sampListX]
+    add ecx, 16
     mov edx, r12d
     lea r8, [lineBuf]
     mov r9d, 17
     mov r10d, COL_NOTE
     call draw_text
 
+    inc ebx
+    cmp ebx, [sampVisRows]
+    jb .samp_loop
+
+    ; Order-Liste zeichnen (ordVisRows Zeilen ab ordViewTop)
+    xor ebx, ebx
+.ord_loop:
+    mov r12d, ebx
+    add r12d, [ordListY]
     mov ebp, ebx
     add ebp, [ordViewTop]
+
     mov al, bpl
     lea r8, [lineBuf]
     call fmt_hex2
@@ -2122,16 +2335,17 @@ draw_screen:
     mov r10d, COL_DOT
 
 .ord_c:
-    mov ecx, 72
+    mov ecx, [ordListX]
     mov edx, r12d
     lea r8, [lineBuf]
     mov r9d, 7
     call draw_text
 
     inc ebx
-    cmp ebx, 12
-    jb .up_loop
+    cmp ebx, [ordVisRows]
+    jb .ord_loop
 
+    ; Status-Block (Classic: Spalte 44, Zeilen 7..12; Widescreen: Spalte 47, Zeilen 2..7)
     mov eax, [curVol]
     lea rdx, [hexTbl]
     mov al, [rdx + rax]
@@ -2152,22 +2366,30 @@ draw_screen:
     lea r8, [statLines + 40 + 6]
     call fmt_hex2
 
+    mov r14d, 44
+    mov r15d, 7
+    cmp dword [wideMode], 0
+    je .st_go
+    mov r14d, 47
+    mov r15d, 2
+.st_go:
     xor ebx, ebx
 .st_loop:
     mov eax, ebx
     shl eax, 3
     lea r12, [statLines]
     add r12, rax
-    lea r13d, [rbx + 7]
+    mov r13d, ebx
+    add r13d, r15d
 
-    mov ecx, 44
+    mov ecx, r14d
     mov edx, r13d
     mov r8, r12
     mov r9d, 5
     mov r10d, COL_TEAL
     call draw_text
 
-    mov ecx, 49
+    lea ecx, [r14 + 5]
     mov edx, r13d
     lea r8, [r12 + 5]
     mov r9d, 3
@@ -2178,6 +2400,7 @@ draw_screen:
     cmp ebx, 6
     jb .st_loop
 
+    ; VU-Balken und horizontale Kanal-Meter (Classic vs. Widescreen)
     xor ebx, ebx
 .vu_loop:
     mov eax, ebx
@@ -2185,10 +2408,13 @@ draw_screen:
     lea r12, [voices]
     mov r13d, [r12 + rax + 48]
 
+    cmp dword [wideMode], 0
+    jne .vu_wide
+
     mov r14d, r13d
     imul r14d, 3
     test r14d, r14d
-    jz .vu_no_bar
+    jz .vu_c_hor
     lea ecx, [rbx + 35]
     imul ecx, CHAR_W
     mov edx, 14 * CHAR_H
@@ -2197,8 +2423,7 @@ draw_screen:
     mov r9d, r14d
     mov r10d, COL_PURP
     call fill_rect
-.vu_no_bar:
-
+.vu_c_hor:
     mov al, bl
     lea r8, [lineBuf]
     call fmt_hex2
@@ -2212,9 +2437,9 @@ draw_screen:
     mov r14d, r13d
     shr r14d, 2
     xor r15d, r15d
-.m_seg:
+.mc_seg:
     cmp r15d, r14d
-    jae .m_done
+    jae .vu_next
     lea ecx, [r15 + 56]
     imul ecx, CHAR_W
     lea edx, [rbx + 6]
@@ -2225,9 +2450,56 @@ draw_screen:
     mov r10d, COL_PURP
     call fill_rect
     inc r15d
-    jmp .m_seg
-.m_done:
+    jmp .mc_seg
 
+.vu_wide:
+    mov r14d, r13d
+    shl r14d, 1
+    test r14d, r14d
+    jz .vu_w_hor
+    lea ecx, [rbx + 38]
+    imul ecx, CHAR_W
+    mov edx, [patHdrRow]
+    imul edx, CHAR_H
+    sub edx, r14d
+    mov r8d, CHAR_W - 2
+    mov r9d, r14d
+    mov r10d, COL_PURP
+    call fill_rect
+.vu_w_hor:
+    mov al, bl
+    lea r8, [lineBuf]
+    call fmt_hex2
+    mov ecx, 57
+    mov edx, [patHdrRow]
+    sub edx, 8
+    add edx, ebx
+    lea r8, [lineBuf]
+    mov r9d, 2
+    mov r10d, COL_NOTE
+    call draw_text
+
+    mov r14d, r13d
+    shr r14d, 2
+    xor r15d, r15d
+.mw_seg:
+    cmp r15d, r14d
+    jae .vu_next
+    lea ecx, [r15 + 60]
+    imul ecx, CHAR_W
+    mov edx, [patHdrRow]
+    sub edx, 8
+    add edx, ebx
+    imul edx, CHAR_H
+    add edx, 3
+    mov r8d, 7
+    mov r9d, 6
+    mov r10d, COL_PURP
+    call fill_rect
+    inc r15d
+    jmp .mw_seg
+
+.vu_next:
     inc ebx
     cmp ebx, NUM_CH
     jb .vu_loop
@@ -2239,19 +2511,21 @@ draw_screen:
     mov [rsp + 0x5C], eax
 
     mov ecx, 4 * CHAR_W
-    mov edx, 16 * CHAR_H
+    mov edx, [patStartRow]
+    imul edx, CHAR_H
     mov r8d, 3 * CHAR_W
-    mov r9d, VIEW_ROWS * CHAR_H
+    mov r9d, [patViewRows]
+    imul r9d, CHAR_H
     mov r10d, COL_PURP
     call fill_rect
 
     mov eax, [rsp + 0x5C]
     sub eax, [patViewTop]
     js .no_bbar
-    cmp eax, VIEW_ROWS
+    cmp eax, [patViewRows]
     jae .no_bbar
     mov ecx, 4 * CHAR_W
-    add eax, 16
+    add eax, [patStartRow]
     imul eax, CHAR_H
     mov edx, eax
     mov r8d, 3 * CHAR_W
@@ -2268,10 +2542,10 @@ draw_screen:
     mov eax, [dispPlayRow]
     sub eax, [patViewTop]
     js .no_pbar
-    cmp eax, VIEW_ROWS
+    cmp eax, [patViewRows]
     jae .no_pbar
     mov ecx, 4 * CHAR_W
-    add eax, 16
+    add eax, [patStartRow]
     imul eax, CHAR_H
     mov edx, eax
     mov r8d, 3 * CHAR_W
@@ -2283,10 +2557,10 @@ draw_screen:
     mov eax, [editRow]
     sub eax, [patViewTop]
     js .no_ebar
-    cmp eax, VIEW_ROWS
+    cmp eax, [patViewRows]
     jae .no_ebar
     mov ecx, 4 * CHAR_W
-    add eax, 16
+    add eax, [patStartRow]
     imul eax, CHAR_H
     mov edx, eax
     mov r8d, 3 * CHAR_W
@@ -2315,13 +2589,14 @@ draw_screen:
 .hdr_draw:
     mov ecx, r12d
     imul ecx, CHAR_W
-    mov edx, 15 * CHAR_H
+    mov edx, [patHdrRow]
+    imul edx, CHAR_H
     mov r8d, 8 * CHAR_W
     mov r9d, CHAR_H
     call fill_rect
 
     lea ecx, [r12 + 3]
-    mov edx, 15
+    mov edx, [patHdrRow]
     mov r8, r13
     mov r9d, 3
     mov r10d, r14d
@@ -2329,9 +2604,11 @@ draw_screen:
 
     mov ecx, r12d
     imul ecx, CHAR_W
-    mov edx, 16 * CHAR_H
+    mov edx, [patStartRow]
+    imul edx, CHAR_H
     mov r8d, 8 * CHAR_W
-    mov r9d, VIEW_ROWS * CHAR_H
+    mov r9d, [patViewRows]
+    imul r9d, CHAR_H
     mov r10d, COL_BLACK
     call fill_rect
 
@@ -2341,7 +2618,8 @@ draw_screen:
 
     xor r12d, r12d
 .row_draw:
-    lea r13d, [r12 + 16]
+    mov r13d, r12d
+    add r13d, [patStartRow]
     mov eax, r12d
     add eax, [patViewTop]
     mov [rsp + 0x58], eax
@@ -2502,85 +2780,89 @@ draw_screen:
     jb .ch_draw
 
     inc r12d
-    cmp r12d, VIEW_ROWS
+    cmp r12d, [patViewRows]
     jb .row_draw
 
-    ; Loesch-Leiste (Zeile 48): Label + 4 Loesch-Schaltflaechen
+    ; Loesch-Leiste (Zeile clrBarRow): Label + 4 Loesch-Schaltflaechen + Copy/Paste
+    mov r14d, [clrBarRow]
+    mov r15d, r14d
+    imul r15d, CHAR_H
+
     mov ecx, 1
-    mov edx, 48
+    mov edx, r14d
     lea r8, [clrBar + 1]
     mov r9d, 9
     mov r10d, COL_TEAL
     call draw_text
 
     mov ecx, 11 * CHAR_W
-    mov edx, 48 * CHAR_H
+    mov edx, r15d
     mov r8d, 9 * CHAR_W
     mov r9d, CHAR_H
     mov r10d, COL_HDR_OFF
     call fill_rect
     mov ecx, 11
-    mov edx, 48
+    mov edx, r14d
     lea r8, [clrBar + 11]
     mov r9d, 9
     mov r10d, COL_WHITE
     call draw_text
 
     mov ecx, 21 * CHAR_W
-    mov edx, 48 * CHAR_H
+    mov edx, r15d
     mov r8d, 10 * CHAR_W
     mov r9d, CHAR_H
     mov r10d, COL_HDR_OFF
     call fill_rect
     mov ecx, 21
-    mov edx, 48
+    mov edx, r14d
     lea r8, [clrBar + 21]
     mov r9d, 10
     mov r10d, COL_WHITE
     call draw_text
 
     mov ecx, 32 * CHAR_W
-    mov edx, 48 * CHAR_H
+    mov edx, r15d
     mov r8d, 11 * CHAR_W
     mov r9d, CHAR_H
     mov r10d, COL_HDR_OFF
     call fill_rect
     mov ecx, 32
-    mov edx, 48
+    mov edx, r14d
     lea r8, [clrBar + 32]
     mov r9d, 11
     mov r10d, COL_WHITE
     call draw_text
 
     mov ecx, 44 * CHAR_W
-    mov edx, 48 * CHAR_H
+    mov edx, r15d
     mov r8d, 11 * CHAR_W
     mov r9d, CHAR_H
     mov r10d, COL_PURP
     call fill_rect
     mov ecx, 44
-    mov edx, 48
+    mov edx, r14d
     lea r8, [clrBar + 44]
     mov r9d, 11
     mov r10d, COL_WHITE
     call draw_text
 
-    ; Copy/Paste-Schaltflaechen in Zeile 48: [SpC] [SpV] [PtC] [PtV]
+    ; Copy/Paste-Schaltflaechen in Zeile clrBarRow: [SpC] [SpV] [PtC] [PtV]
     mov ecx, 56 * CHAR_W
-    mov edx, 48 * CHAR_H
+    mov edx, r15d
     mov r8d, 5 * CHAR_W
     mov r9d, CHAR_H
     mov r10d, COL_HDR_ON
     call fill_rect
     mov ecx, 56
-    mov edx, 48
+    mov edx, r14d
     lea r8, [clrBar + 56]
     mov r9d, 5
     mov r10d, COL_WHITE
     call draw_text
 
     mov ecx, 62 * CHAR_W
-    mov edx, 48 * CHAR_H
+    mov edx, r15d
     mov r8d, 5 * CHAR_W
     mov r9d, CHAR_H
     mov r10d, COL_BEAT
@@ -2590,7 +2872,7 @@ draw_screen:
 .spv_bg:
     call fill_rect
     mov ecx, 62
-    mov edx, 48
+    mov edx, r14d
     lea r8, [clrBar + 62]
     mov r9d, 5
     mov r10d, COL_MUTED
@@ -2601,20 +2883,20 @@ draw_screen:
     call draw_text
 
     mov ecx, 68 * CHAR_W
-    mov edx, 48 * CHAR_H
+    mov edx, r15d
     mov r8d, 5 * CHAR_W
     mov r9d, CHAR_H
     mov r10d, COL_HDR_ON
     call fill_rect
     mov ecx, 68
-    mov edx, 48
+    mov edx, r14d
     lea r8, [clrBar + 68]
     mov r9d, 5
     mov r10d, COL_WHITE
     call draw_text
 
     mov ecx, 74 * CHAR_W
-    mov edx, 48 * CHAR_H
+    mov edx, r15d
     mov r8d, 5 * CHAR_W
     mov r9d, CHAR_H
     mov r10d, COL_BEAT
@@ -2624,7 +2906,7 @@ draw_screen:
 .ptv_bg:
     call fill_rect
     mov ecx, 74
-    mov edx, 48
+    mov edx, r14d
     lea r8, [clrBar + 74]
     mov r9d, 5
     mov r10d, COL_MUTED
@@ -2634,7 +2916,11 @@ draw_screen:
 .ptv_tx:
     call draw_text
 
-    ; Fusszeile (Zeile 49)
+    ; Fusszeile (Zeile botBarRow)
+    mov r14d, [botBarRow]
+    mov r15d, r14d
+    imul r15d, CHAR_H
+
     mov eax, [curTempo]
     lea rdx, [hexTbl]
     mov al, [rdx + rax]
@@ -2662,7 +2948,7 @@ draw_screen:
     mov [botBar + 46], al
 
     xor ecx, ecx
-    mov edx, 49
+    mov edx, r14d
     lea r8, [botBar]
     mov r9d, 79
     mov r10d, COL_CYAN
@@ -2670,14 +2956,14 @@ draw_screen:
 
     ; Sample-/Instrument-Editor-Schaltflaeche [I] (Spalten 67..69)
     mov ecx, 67 * CHAR_W
-    mov edx, 49 * CHAR_H
+    mov edx, r15d
     mov r8d, 3 * CHAR_W
     mov r9d, CHAR_H
     mov r10d, COL_PURPHI
     call fill_rect
 
     mov ecx, 67
-    mov edx, 49
+    mov edx, r14d
     lea r8, [botBar + 67]
     mov r9d, 3
     mov r10d, COL_BLACK
@@ -2685,14 +2971,14 @@ draw_screen:
 
     ; Demo-Schaltflaeche [D] (Spalten 71..73)
     mov ecx, 71 * CHAR_W
-    mov edx, 49 * CHAR_H
+    mov edx, r15d
     mov r8d, 3 * CHAR_W
     mov r9d, CHAR_H
     mov r10d, COL_HDR_ON
     call fill_rect
 
     mov ecx, 71
-    mov edx, 49
+    mov edx, r14d
     lea r8, [botBar + 71]
     mov r9d, 3
     mov r10d, COL_WHITE
@@ -2700,7 +2986,7 @@ draw_screen:
 
     ; Hilfe-Schaltflaeche [?] (Spalten 75..77)
     mov ecx, 75 * CHAR_W
-    mov edx, 49 * CHAR_H
+    mov edx, r15d
     mov r8d, 3 * CHAR_W
     mov r9d, CHAR_H
     mov r10d, COL_PURP
@@ -2711,7 +2997,7 @@ draw_screen:
     call fill_rect
 
     mov ecx, 75
-    mov edx, 49
+    mov edx, r14d
     lea r8, [botBar + 75]
     mov r9d, 3
     mov r10d, COL_WHITE
@@ -2722,79 +3008,12 @@ draw_screen:
     call draw_help_overlay
 
 .ds_output:
-    cmp dword [isFullscreen], 0
-    je .blit_win
-
-    mov r12d, [dispX]
-    test r12d, r12d
-    jz .fs_chk_y
     mov rcx, [hDC]
     xor edx, edx
     xor r8d, r8d
-    mov r9d, r12d
-    mov eax, [scrH]
+    mov r9d, [curWinW]
+    mov eax, [curWinH]
     mov [rsp + 0x20], rax
-    mov qword [rsp + 0x28], BLACKNESS
-    call PatBlt
-
-    mov rcx, [hDC]
-    mov edx, [dispX]
-    add edx, [dispW]
-    xor r8d, r8d
-    mov r9d, [scrW]
-    sub r9d, edx
-    mov eax, [scrH]
-    mov [rsp + 0x20], rax
-    mov qword [rsp + 0x28], BLACKNESS
-    call PatBlt
-    jmp .fs_stretch
-
-.fs_chk_y:
-    mov r12d, [dispY]
-    test r12d, r12d
-    jz .fs_stretch
-    mov rcx, [hDC]
-    xor edx, edx
-    xor r8d, r8d
-    mov r9d, [scrW]
-    mov [rsp + 0x20], r12
-    mov qword [rsp + 0x28], BLACKNESS
-    call PatBlt
-
-    mov rcx, [hDC]
-    xor edx, edx
-    mov r8d, [dispY]
-    add r8d, [dispH]
-    mov r9d, [scrW]
-    mov eax, [scrH]
-    sub eax, r8d
-    mov [rsp + 0x20], rax
-    mov qword [rsp + 0x28], BLACKNESS
-    call PatBlt
-
-.fs_stretch:
-    mov rcx, [hDC]
-    mov edx, [dispX]
-    mov r8d, [dispY]
-    mov r9d, [dispW]
-    mov eax, [dispH]
-    mov [rsp + 0x20], rax
-    mov rax, [memDC]
-    mov [rsp + 0x28], rax
-    mov qword [rsp + 0x30], 0
-    mov qword [rsp + 0x38], 0
-    mov qword [rsp + 0x40], WIN_W
-    mov qword [rsp + 0x48], WIN_H
-    mov qword [rsp + 0x50], SRCCOPY
-    call StretchBlt
-    jmp .draw_done
-
-.blit_win:
-    mov rcx, [hDC]
-    xor edx, edx
-    xor r8d, r8d
-    mov r9d, WIN_W
-    mov qword [rsp + 0x20], WIN_H
     mov rax, [memDC]
     mov [rsp + 0x28], rax
     mov qword [rsp + 0x30], 0

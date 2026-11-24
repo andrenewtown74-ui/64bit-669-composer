@@ -1,10 +1,11 @@
 ; Konstanten, Windows-API-Importe sowie .data und .bss fuer Composer 669 x64 Tracker
 
-; Raster- und Fensterkonstanten (80x50 Zeichen a 12x12 Pixel)
+; Raster- und Fensterkonstanten (Basis 80x50, Widescreen ab 124 Spalten, dynamisch skalierbar)
 CHAR_W          equ 12
 CHAR_H          equ 12
 WIN_W           equ 960
 WIN_H           equ 600
+WIDE_COLS       equ 124
 DEMO_W          equ 320
 DEMO_H          equ 200
 
@@ -35,10 +36,13 @@ REC_BUF_COUNT   equ 4
 REC_CHUNK_BYTES equ 512
 
 ; Windows-Konstanten
-WS_TRACKER      equ 0x10CA0000
+WS_TRACKER      equ 0x10CF0000          ; WS_OVERLAPPEDWINDOW | WS_VISIBLE (frei skalierbar & maximierbar)
+WS_MAXIMIZE     equ 0x01000000
 WS_POPUP_VIS    equ 0x90000000
+SW_MAXIMIZE     equ 3
 GWL_STYLE       equ -16
 SWP_FRAMECHANGED equ 0x0020
+SIZE_MINIMIZED  equ 1
 SRCCOPY         equ 0x00CC0020
 BLACKNESS       equ 0x00000042
 COLORONCOLOR    equ 3
@@ -59,7 +63,10 @@ OFN_OPEN_FLAGS        equ 0x00001808
 OFN_SAVE_FLAGS        equ 0x0000080A
 
 WM_DESTROY      equ 0x0002
+WM_SIZE         equ 0x0005
 WM_CLOSE        equ 0x0010
+WM_ERASEBKGND   equ 0x0014
+WM_GETMINMAXINFO equ 0x0024
 WM_KEYDOWN      equ 0x0100
 WM_SYSKEYDOWN   equ 0x0104
 WM_SYSCHAR      equ 0x0106
@@ -141,8 +148,11 @@ extern DispatchMessageA
 extern GetKeyState
 extern GetSystemMetrics
 extern GetWindowRect
+extern GetClientRect
+extern GetWindowLongA
 extern SetWindowLongA
 extern SetWindowPos
+extern ShowWindow
 extern ScreenToClient
 extern MessageBoxA
 extern SetCapture
@@ -152,6 +162,7 @@ extern ReleaseCapture
 extern CreateCompatibleDC
 extern CreateCompatibleBitmap
 extern SelectObject
+extern DeleteObject
 extern CreateFontA
 extern SetBkMode
 extern SetBkColor
@@ -268,6 +279,11 @@ stFxTrm      db "TRIM OK"
 topBar      db " Composer 669 x64 Tracker        File: _4KSYNTH          Mode: PAT-LOOP        "
 clrBar      db " Loeschen: [Akt.Pat] [Alle Pat] [Alle Inst] [Alles/Neu] [SpC] [SpV] [PtC] [PtV] "
 botBar      db " Tmp:5 Oct:2 Ch:0 Pat:00 Row:00/3F Ins:00 Stp:1 [SPACE=Play] [Brk] [I] [D] [?]  "
+wideTopInfo db "SAMPLES (00..3F) & ORDERS (00..7F)        "
+wideSmpHdr  db "ID SAMPLE-NAME  LOOPS LOOPE   LEN"
+wideOrdHdr  db "OR PT T"
+wideHint1   db "Mausrad: Samples / Orders / Pattern       "
+wideHint2   db "Alt+Enter: Vollbild | Fenster frei ziehbar"
 demoTopBar  db "4K:PLASMA File:                  Ord:00 Pat:00 Row:00 Tmp:5  [TAB=FX ESC=Back] "
 demoBotBar  db " [TAB/Rad=Effekt] [Klick/ESC=Tracker] [R-Klick/SPACE=Play] [Strg+O=669] [FS]   "
 demoFxNames db "PLASMATUNNELRASTER"
@@ -287,6 +303,74 @@ seRecBanner db "   *** AUFNAHME LAEUFT (22050 Hz, 8-Bit Mono) - [REC Stop!] zum 
 seKeyHint   db " Slider = Live pro Slot | MOD:SAMPLE bearbeitet 669/WAV/REC | L/E = Loop      "
 seBotBar    db " Slot:00  Oct:2  [SPACE=Play Song]  [Strg+E / ESC = Zurueck Tracker]       [?] "
 seEmptyMsg  db " Slot nutzt internen Synth / leer - Regler bewegen, WAV laden oder REC nutzen "
+
+; Widescreen-Texte (124 Spalten) fuer den Sample- & Instrument-Editor mit getrennten Panels
+seWTopBar   db " SAMPLE-EDITOR  Slot:00              Laenge:00000  Loop:AUS   [Slot -] [Slot +]   [ESC = Zurueck Tracker]           BEREIT "
+seWInfoBar  db " Auswahl: 00000-00000   Loop: 00000-FFFFF   Maus: L/E ziehen = Loop | Linksklick = Auswahl-Start | Rechtsklick = Ende      "
+seWActBar   db " [WAV laden] [REC Start] [Vorhoeren] [Stop Ton] [Loop: EIN] [Auswahl->Loop] [Zuschneiden] [Slot leeren]                    "
+seWFxBar    db " Bearbeitung: [Normalisieren] [Einblenden] [Ausblenden] [Rueckwaerts] [Lauter +50%] [Halbieren] [Alles waehlen]            "
+seWSmpHdr   db " SAMPLE-FX (zerstoerungsfrei fuer geladenes Sample)       "
+seWSynHdr   db " SYNTHESIZER (ADSR-Oszillator -> erzeugt neues Sample)    "
+seWSmpOk    db "Status: Original gesichert - Regler wirken live/verlustf."
+seWSmpPcm   db "Status: Aktiver Klang bereit (wird bei FX als Orig. ges.)"
+seWSmpNo    db "Status: Kein Sample geladen (erst WAV laden oder REC)    "
+seWSmpTip   db "Tipp: 50=neutral bei Ton-Sweep | Original bleibt erhalten"
+seWSynWave  db "Welle: [Sinus] [Saege] [Puls ] [Dreie] [Rausc]  Pw: 50%  "
+seWSynPre   db "[808Kick] [Snare] [AcidSaw] [ChipSqr] [SoftPad] [LaserFX]"
+seWBotBar   db " Slot:00  Oktave:2  [Leertaste = Song Play/Stop]  [QWERTZ = Vorhoeren]  [Mausrad = Slot]  [ESC = Tracker]              [?] "
+seWRecBan   db " *** AUFNAHME LAEUFT (22050 Hz, 8-Bit Mono) - [REC Stop!] zum Beenden ***                                                 "
+
+txtWLoopOn  db "[Loop: EIN]"
+txtWLoopOff db "[Loop: AUS]"
+txtWSmpApp  db "[Sample-FX anwenden]"
+txtWOrigRes db "[Original wiederherstellen]"
+txtWSynGen  db "[Synth erzeugen]"
+txtWAlOn    db "[Auto-Loop: AN ]"
+txtWAlOff   db "[Auto-Loop: AUS]"
+txtWLiveOn  db "[Live-Edit: AN ]"
+txtWLiveOff db "[Live-Edit: AUS]"
+
+; 7 Widescreen-Bearbeitungs-Buttons in seWFxBar: Startspalte, Breite
+seWFxBtnPos:
+    db 14, 15
+    db 30, 12
+    db 43, 12
+    db 56, 13
+    db 70, 13
+    db 84, 11
+    db 96, 15
+
+; 6 Widescreen-Preset-Buttons in seWSynPre (Spalte absolut, Breite)
+seWPreBtnPos:
+    db  65, 9
+    db  75, 7
+    db  83, 9
+    db  93, 9
+    db 103, 9
+    db 113, 9
+
+; 9 klare deutsche Regler-Namen (je 12 Zeichen) fuer SAMPLE-FX und SYNTHESIZER
+seSmpParamNames:
+    db "Einblenden  "
+    db "Abfallzeit  "
+    db "Haltepegel  "
+    db "Ausklingen  "
+    db "Laenge/Gate "
+    db "Ton-Sweep   "
+    db "Chorus      "
+    db "Tiefpass LP "
+    db "Lautstaerke "
+
+seSynParamNames:
+    db "Attack      "
+    db "Decay       "
+    db "Sustain     "
+    db "Release     "
+    db "Ton-Dauer   "
+    db "Ton-Sweep   "
+    db "Detune/Cho  "
+    db "Tiefpass LP "
+    db "Lautstaerke "
 
 txtRecBtnOn  db "[REC Start]"
 txtRecBtnOff db "[REC Stop!]"
@@ -526,6 +610,7 @@ hInst       resq 1
 hWnd        resq 1
 hDC         resq 1
 memDC       resq 1
+memBmp      resq 1
 hWaveOut    resq 1
 hWaveIn     resq 1
 wndClass    resb 72
@@ -578,19 +663,21 @@ sePulse       resd 1
 seSynthLfsr   resd 1
 seLiveSynth   resd 1            ; 1 = jede Aenderung rendert sofort in den aktiven Slot
 seAutoLoop    resd 1            ; 1 = Synth setzt automatisch Sustain-Loop
-seDragMode    resd 1            ; 0=aus, 1=LoopStart, 2=LoopEnd, 3=Slider
+seDragMode    resd 1            ; 0=aus, 1=LoopStart, 2=LoopEnd, 3=ClassicSlider, 4=WideSmpSlider, 5=WideSynSlider
 seDragParam   resd 1            ; Aktiver Slider-Index 0..8 beim Ziehen
-seParams      resd 9            ; Attack, Decay, Sustain, Release, Dauer, Sweep, Detune, Filter, Lautstaerke
+seSynthParams resd 9            ; Synth: Attack, Decay, Sustain, Release, Dauer, Sweep, Detune, Filter, Lautstaerke
+seSmpParams   resd 9            ; Sample-FX: Einblenden, Abfall, Haltepegel, Ausklingen, Gate, Sweep, Chorus, Filter, Vol
 
 ; Gespeicherte Editor-Konfiguration getrennt fuer jeden der 64 Slots
 alignb 16
-slotMode      resb MAX_SAMPS
-slotWave      resb MAX_SAMPS
-slotPulse     resb MAX_SAMPS
-slotAutoLoop  resb MAX_SAMPS
+slotMode        resb MAX_SAMPS
+slotWave        resb MAX_SAMPS
+slotPulse       resb MAX_SAMPS
+slotAutoLoop    resb MAX_SAMPS
 alignb 4
-slotOrigLen   resd MAX_SAMPS
-slotParams    resd MAX_SAMPS * 9
+slotOrigLen     resd MAX_SAMPS
+slotSynthParams resd MAX_SAMPS * 9
+slotSmpParams   resd MAX_SAMPS * 9
 
 ; Zwischenablage-Status fuer Spur und Pattern
 clipChValid   resd 1
@@ -598,10 +685,47 @@ clipPatValid  resd 1
 clipPatBreak  resd 1
 clipPatTempo  resd 1
 
-; Fullscreen- und Skalierungszustand
+; Fullscreen-, Fenster- und dynamischer Layout-Zustand
 isFullscreen  resd 1
+wasMaximized  resd 1
 scrW          resd 1
 scrH          resd 1
+minWinW       resd 1
+minWinH       resd 1
+curWinW       resd 1
+curWinH       resd 1
+bufW          resd 1
+bufH          resd 1
+gridCols      resd 1
+gridRows      resd 1
+layoutCols    resd 1
+wideMode      resd 1
+uiOffX        resd 1
+uiOffY        resd 1
+seOffX        resd 1
+seOffY        resd 1
+drawOffX      resd 1
+drawOffY      resd 1
+sampListX     resd 1
+sampListY     resd 1
+sampVisRows   resd 1
+ordListX      resd 1
+ordListY      resd 1
+ordVisRows    resd 1
+patHdrRow     resd 1
+patStartRow   resd 1
+patViewRows   resd 1
+clrBarRow     resd 1
+botBarRow     resd 1
+seWfRows      resd 1
+seWfW         resd 1
+seInfoRow     resd 1
+seActRow      resd 1
+seFxRow       resd 1
+sePanelRow    resd 1
+seSlStep      resd 1
+seBtnRow      resd 1
+seRecRow      resd 1
 dispX         resd 1
 dispY         resd 1
 dispW         resd 1
@@ -659,7 +783,7 @@ sampC2Step       resd MAX_SAMPS
 
 ; Song-Tabellen (128 Orders, 128 Pattern-Tempos, 128 Pattern-Breaks)
 alignb 16
-dxTbl          resd 80
+dxTbl          resd 256
 sinTbl         resd 256
 demoPal        resd 256
 demoScrollTxt  resb 128

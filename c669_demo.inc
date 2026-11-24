@@ -2,9 +2,11 @@
 ; Effekte per TAB umschaltbar: 0=Plasma, 1=3D-Tunnel, 2=Rasterbars
 ; Live gekoppelt an VU-Pegel, Stereo-Audiopuffer und Song-Message der geladenen .669-Datei
 
-; Einzelnes Zeichen pixelgenau in memDC zeichnen: ECX=px, EDX=py, R8=Ptr, R10D=Farbe
+; Einzelnes Zeichen pixelgenau in memDC zeichnen: ECX=px, EDX=py, R8=Ptr, R10D=Farbe (inkl. drawOffX/Y)
 draw_char_px:
     sub rsp, 0x68
+    add ecx, [drawOffX]
+    add edx, [drawOffY]
     mov [rsp + 0x40], ecx
     mov [rsp + 0x44], edx
     mov [rsp + 0x48], r8
@@ -670,8 +672,11 @@ draw_demo_frame:
     jb .df_bar_loop
 
     ; ------------------------------------------------------------------------
-    ; 6. 320x200 Framebuffer scharf 3x in memDC (960x600) skalieren
+    ; 6. 320x200 Framebuffer scharf in aktuelles Fenster (curWinW x curWinH) skalieren
     ; ------------------------------------------------------------------------
+    mov dword [drawOffX], 0
+    mov dword [drawOffY], 0
+
     mov rcx, [memDC]
     mov edx, COLORONCOLOR
     call SetStretchBltMode
@@ -679,8 +684,9 @@ draw_demo_frame:
     mov rcx, [memDC]
     xor edx, edx
     xor r8d, r8d
-    mov r9d, WIN_W
-    mov qword [rsp + 0x20], WIN_H
+    mov r9d, [curWinW]
+    mov eax, [curWinH]
+    mov [rsp + 0x20], rax
     mov qword [rsp + 0x28], 0
     mov qword [rsp + 0x30], 0
     mov qword [rsp + 0x38], DEMO_W
@@ -731,7 +737,9 @@ draw_demo_frame:
     and eax, 255
     mov eax, [r15 + rax*4]
     sar eax, 2
-    add eax, 76
+    mov edx, [curWinH]
+    shr edx, 3
+    add eax, edx
     mov ebp, eax
 
     lea ecx, [r12 + 2]
@@ -752,7 +760,9 @@ draw_demo_frame:
 
 .df_scr_next:
     inc ebx
-    cmp ebx, 80
+    mov eax, [gridCols]
+    inc eax
+    cmp ebx, eax
     jb .df_scr_loop
 
     ; ------------------------------------------------------------------------
@@ -760,7 +770,7 @@ draw_demo_frame:
     ; ------------------------------------------------------------------------
     xor ecx, ecx
     xor edx, edx
-    mov r8d, WIN_W
+    mov r8d, [curWinW]
     mov r9d, CHAR_H
     mov r10d, COL_BLACK
     call fill_rect
@@ -792,22 +802,32 @@ draw_demo_frame:
     mov al, [rdx + rax]
     mov [demoTopBar + 58], al
 
+    mov ecx, [gridCols]
+    sub ecx, 79
+    jns .df_tx_ok
     xor ecx, ecx
+.df_tx_ok:
+    shr ecx, 1
+    mov r12d, ecx
     xor edx, edx
     lea r8, [demoTopBar]
     mov r9d, 79
     mov r10d, COL_CYAN
     call draw_text
 
+    mov r13d, [gridRows]
+    dec r13d
+    mov edx, r13d
+    imul edx, CHAR_H
+    mov r9d, [curWinH]
+    sub r9d, edx
     xor ecx, ecx
-    mov edx, 49 * CHAR_H
-    mov r8d, WIN_W
-    mov r9d, CHAR_H
+    mov r8d, [curWinW]
     mov r10d, COL_BLACK
     call fill_rect
 
-    xor ecx, ecx
-    mov edx, 49
+    mov ecx, r12d
+    mov edx, r13d
     lea r8, [demoBotBar]
     mov r9d, 79
     mov r10d, COL_TEAL

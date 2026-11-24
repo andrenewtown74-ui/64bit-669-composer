@@ -49,7 +49,7 @@ samped_reset_slot_synth:
     mov dword [rdx + rcx*4], 0
 
     imul eax, ecx, 36
-    lea rdi, [slotParams]
+    lea rdi, [slotSynthParams]
     add rdi, rax
     mov dword [rdi + 0*4], 4            ; Attack
     mov dword [rdi + 1*4], 32           ; Decay
@@ -61,6 +61,18 @@ samped_reset_slot_synth:
     mov dword [rdi + 7*4], 80           ; Filter LP
     mov dword [rdi + 8*4], 90           ; Lautstaerke
 
+    lea rdi, [slotSmpParams]
+    add rdi, rax
+    mov dword [rdi + 0*4], 0            ; Einblenden neutral
+    mov dword [rdi + 1*4], 0            ; Abfallzeit neutral
+    mov dword [rdi + 2*4], 100          ; Haltepegel neutral
+    mov dword [rdi + 3*4], 0            ; Ausklingen neutral
+    mov dword [rdi + 4*4], 100          ; Laenge/Gate 100%
+    mov dword [rdi + 5*4], 50           ; Ton-Sweep neutral
+    mov dword [rdi + 6*4], 0            ; Chorus aus
+    mov dword [rdi + 7*4], 100          ; Tiefpass offen
+    mov dword [rdi + 8*4], 100          ; Lautstaerke 100%
+
     cmp ecx, [seCurSlot]
     jne .srs_done
     mov dword [seCurSlot], -1
@@ -68,7 +80,7 @@ samped_reset_slot_synth:
     pop rdi
     ret
 
-; Aktuelles pcmSlots[ECX] als unbearbeitetes Original nach pcmOrigSlots[ECX] sichern (MOD:SAMPLE, neutrale Slider)
+; Aktuelles pcmSlots[ECX] als unbearbeitetes Original nach pcmOrigSlots[ECX] sichern (Sample-FX neutral, Synth bleibt erhalten)
 samped_commit_orig_slot:
     push rbx
     push rsi
@@ -104,16 +116,16 @@ samped_commit_orig_slot:
     mov byte [rdx + rbx], 0
 
     imul eax, ebx, 36
-    lea rdi, [slotParams]
+    lea rdi, [slotSmpParams]
     add rdi, rax
-    mov dword [rdi + 0*4], 0            ; Attack neutral
-    mov dword [rdi + 1*4], 0            ; Decay neutral
-    mov dword [rdi + 2*4], 100          ; Sustain neutral
-    mov dword [rdi + 3*4], 0            ; Release neutral
-    mov dword [rdi + 4*4], 100          ; Dauer 100%
-    mov dword [rdi + 5*4], 50           ; Sweep neutral
+    mov dword [rdi + 0*4], 0            ; Einblenden neutral
+    mov dword [rdi + 1*4], 0            ; Abfallzeit neutral
+    mov dword [rdi + 2*4], 100          ; Haltepegel neutral
+    mov dword [rdi + 3*4], 0            ; Ausklingen neutral
+    mov dword [rdi + 4*4], 100          ; Laenge/Gate 100%
+    mov dword [rdi + 5*4], 50           ; Ton-Sweep neutral
     mov dword [rdi + 6*4], 0            ; Chorus aus
-    mov dword [rdi + 7*4], 100          ; Filter offen
+    mov dword [rdi + 7*4], 100          ; Tiefpass offen
     mov dword [rdi + 8*4], 100          ; Lautstaerke 100%
 
     mov dword [seCurSlot], -1
@@ -149,9 +161,17 @@ samped_load_cur_slot:
     mov [seAutoLoop], ecx
 
     imul eax, 36
-    lea rsi, [slotParams]
+    push rax
+    lea rsi, [slotSynthParams]
     add rsi, rax
-    lea rdi, [seParams]
+    lea rdi, [seSynthParams]
+    mov ecx, 9
+    rep movsd
+    pop rax
+
+    lea rsi, [slotSmpParams]
+    add rsi, rax
+    lea rdi, [seSmpParams]
     mov ecx, 9
     rep movsd
 
@@ -183,9 +203,17 @@ samped_save_cur_slot:
     mov [rdx + rax], cl
 
     imul eax, 36
-    lea rdi, [slotParams]
+    push rax
+    lea rdi, [slotSynthParams]
     add rdi, rax
-    lea rsi, [seParams]
+    lea rsi, [seSynthParams]
+    mov ecx, 9
+    rep movsd
+    pop rax
+
+    lea rdi, [slotSmpParams]
+    add rdi, rax
+    lea rsi, [seSmpParams]
     mov ecx, 9
     rep movsd
 
@@ -331,33 +359,26 @@ samped_cycle_rec_dev:
     pop rbx
     ret
 
-; Client-lParam (ECX) in geklemmte virtuelle X-Koordinate (EAX = 0..959) umrechnen
+; Client-lParam (ECX) in geklemmte virtuelle X-Koordinate umrechnen (Wide: 0..1487, Classic: 0..959)
 se_lparam_to_px:
     movsx eax, cx
-    cmp dword [isFullscreen], 0
-    je .slp_clamp
-    sub eax, [dispX]
-    jns .slp_fs_pos
-    xor eax, eax
-    ret
-.slp_fs_pos:
-    cmp eax, [dispW]
-    jb .slp_fs_div
-    mov eax, WIN_W - 1
-    ret
-.slp_fs_div:
-    imul eax, WIN_W
-    xor edx, edx
-    div dword [dispW]
+    cmp dword [wideMode], 0
+    jne .slp_wide
+    sub eax, [seOffX]
+    mov ecx, WIN_W - 1
+    jmp .slp_clamp
+.slp_wide:
+    sub eax, [uiOffX]
+    mov ecx, WIDE_COLS * CHAR_W - 1
 .slp_clamp:
     test eax, eax
     jns .slp_hi
     xor eax, eax
     ret
 .slp_hi:
-    cmp eax, WIN_W - 1
+    cmp eax, ecx
     jbe .slp_ok
-    mov eax, WIN_W - 1
+    mov eax, ecx
 .slp_ok:
     ret
 
@@ -1193,7 +1214,7 @@ sample_fx_render_to_slot:
 
     ; Ausgabelaenge ueber Dauer-Slider (5..100% der Originallaenge)
     mov eax, r14d
-    imul rax, [seParams + 4*4]
+    imul rax, [seSmpParams + 4*4]
     xor edx, edx
     mov ecx, 100
     div rcx
@@ -1212,21 +1233,21 @@ sample_fx_render_to_slot:
 
     ; ADSR-Phasenlaengen (bei 0/0/100/0 komplett neutral)
     mov eax, r12d
-    imul eax, [seParams + 0*4]
+    imul eax, [seSmpParams + 0*4]
     xor edx, edx
     mov ecx, 250
     div ecx
     mov [rsp + 0x28], eax               ; nA
 
     mov eax, r12d
-    imul eax, [seParams + 1*4]
+    imul eax, [seSmpParams + 1*4]
     xor edx, edx
     mov ecx, 250
     div ecx
     mov [rsp + 0x2C], eax               ; nD
 
     mov eax, r12d
-    imul eax, [seParams + 3*4]
+    imul eax, [seSmpParams + 3*4]
     xor edx, edx
     mov ecx, 250
     div ecx
@@ -1257,7 +1278,7 @@ sample_fx_render_to_slot:
     mov [rsp + 0x30], eax               ; rStart = nA + nD + nS
 
     ; Sustain-Pegel 0..32768 (32768 bei 100% = verlustfreie Skalierung)
-    mov eax, [seParams + 2*4]
+    mov eax, [seSmpParams + 2*4]
     shl eax, 15
     xor edx, edx
     mov ecx, 100
@@ -1265,7 +1286,7 @@ sample_fx_render_to_slot:
     mov [rsp + 0x38], eax               ; sustLvl
 
     ; Tiefpass-Alpha (0..256, 256 bei 100% = transparent)
-    mov eax, [seParams + 7*4]
+    mov eax, [seSmpParams + 7*4]
     cmp eax, 5
     jae .sfx_lp_ok
     mov eax, 5
@@ -1277,7 +1298,7 @@ sample_fx_render_to_slot:
     mov [rsp + 0x40], eax               ; lpAlpha
 
     ; Lautstaerke-Faktor (0..256, 256 bei 100% = Originalpegel)
-    mov eax, [seParams + 8*4]
+    mov eax, [seSmpParams + 8*4]
     shl eax, 8
     xor edx, edx
     mov ecx, 100
@@ -1285,12 +1306,12 @@ sample_fx_render_to_slot:
     mov [rsp + 0x44], eax               ; volScale
 
     ; Pitch-Sweep-Delta (-49000..+49000 bei 0..100, 0 bei 50 = neutral)
-    mov eax, [seParams + 5*4]
+    mov eax, [seSmpParams + 5*4]
     sub eax, 50
     imul eax, 980
     mov [rsp + 0x4C], eax               ; sweepDelta
 
-    mov eax, [seParams + 6*4]
+    mov eax, [seSmpParams + 6*4]
     mov [rsp + 0x60], eax               ; detuneVal
 
     mov dword [rsp + 0x3C], 0           ; lpState
@@ -1525,15 +1546,15 @@ samped_restore_orig:
     mov [rdx + rbx*4], ecx
 
     mov dword [seMode], 1
-    mov dword [seParams + 0*4], 0
-    mov dword [seParams + 1*4], 0
-    mov dword [seParams + 2*4], 100
-    mov dword [seParams + 3*4], 0
-    mov dword [seParams + 4*4], 100
-    mov dword [seParams + 5*4], 50
-    mov dword [seParams + 6*4], 0
-    mov dword [seParams + 7*4], 100
-    mov dword [seParams + 8*4], 100
+    mov dword [seSmpParams + 0*4], 0
+    mov dword [seSmpParams + 1*4], 0
+    mov dword [seSmpParams + 2*4], 100
+    mov dword [seSmpParams + 3*4], 0
+    mov dword [seSmpParams + 4*4], 100
+    mov dword [seSmpParams + 5*4], 50
+    mov dword [seSmpParams + 6*4], 0
+    mov dword [seSmpParams + 7*4], 100
+    mov dword [seSmpParams + 8*4], 100
     call samped_save_cur_slot
 
     mov dword [seLastSlot], -1
@@ -1638,7 +1659,7 @@ synth_render_to_slot:
     mov [rsp + 0x60], edx
     mov dword [seSynthLfsr], 0x5EED1234
 
-    mov eax, [seParams + 4*4]
+    mov eax, [seSynthParams + 4*4]
     cmp eax, 5
     jae .sr_d_ok
     mov eax, 5
@@ -1652,21 +1673,21 @@ synth_render_to_slot:
     mov r12d, eax
 
     mov eax, r12d
-    imul eax, [seParams + 0*4]
+    imul eax, [seSynthParams + 0*4]
     xor edx, edx
     mov ecx, 250
     div ecx
     mov [rsp + 0x28], eax
 
     mov eax, r12d
-    imul eax, [seParams + 1*4]
+    imul eax, [seSynthParams + 1*4]
     xor edx, edx
     mov ecx, 250
     div ecx
     mov [rsp + 0x2C], eax
 
     mov eax, r12d
-    imul eax, [seParams + 3*4]
+    imul eax, [seSynthParams + 3*4]
     xor edx, edx
     mov ecx, 250
     div ecx
@@ -1698,7 +1719,7 @@ synth_render_to_slot:
     add ecx, eax
     mov [rsp + 0x5C], ecx
 
-    mov eax, [seParams + 2*4]
+    mov eax, [seSynthParams + 2*4]
     imul eax, 32767
     xor edx, edx
     mov ecx, 100
@@ -1709,7 +1730,7 @@ synth_render_to_slot:
     mov [rsp + 0x40], eax
     mov [rsp + 0x3C], eax
 
-    mov ecx, [seParams + 5*4]
+    mov ecx, [seSynthParams + 5*4]
     cmp ecx, 50
     jae .sr_sw_ok
     mov edx, 50
@@ -1723,7 +1744,7 @@ synth_render_to_slot:
     mov [rsp + 0x3C], eax
 .sr_sw_ok:
 
-    mov eax, [seParams + 7*4]
+    mov eax, [seSynthParams + 7*4]
     cmp eax, 5
     jae .sr_lp_ok
     mov eax, 5
@@ -1741,7 +1762,7 @@ synth_render_to_slot:
     div ecx
     mov [rsp + 0x54], eax
 
-    mov eax, [seParams + 8*4]
+    mov eax, [seSynthParams + 8*4]
     shl eax, 8
     xor edx, edx
     mov ecx, 100
@@ -1763,7 +1784,7 @@ synth_render_to_slot:
     xor ebx, ebx
 
 .sr_loop:
-    mov ecx, [seParams + 5*4]
+    mov ecx, [seSynthParams + 5*4]
     cmp ecx, 50
     je .sr_sw_done
     jb .sr_sw_down
@@ -1792,7 +1813,7 @@ synth_render_to_slot:
     call synth_osc_eval
     mov r13d, eax
 
-    mov ecx, [seParams + 6*4]
+    mov ecx, [seSynthParams + 6*4]
     test ecx, ecx
     jz .sr_no_det
     cmp r8d, 4
@@ -2011,7 +2032,7 @@ apply_synth_preset:
     xor ecx, ecx
 .asp_p:
     movzx eax, byte [rsi + 2 + rcx]
-    lea rdx, [seParams]
+    lea rdx, [seSynthParams]
     mov [rdx + rcx*4], eax
     inc ecx
     cmp ecx, 8
@@ -2033,7 +2054,7 @@ apply_synth_preset:
 ; Drag-Helfer fuer Loop-Striche (seDragMode 1/2) und Slider (seDragMode 3)
 ; ============================================================================
 
-; Loop-Start oder Loop-Ende anhand virtueller X-Position (ECX = 0..959) aktualisieren
+; Loop-Start oder Loop-Ende anhand virtueller X-Position (ECX) aktualisieren (Wide & Classic)
 se_update_loop_drag:
     push rbx
     sub rsp, 0x20
@@ -2048,18 +2069,18 @@ se_update_loop_drag:
     cmp r9d, 32
     jb .uld_done
 
+    mov r8d, [seWfW]
     mov eax, ecx
     sub eax, 16
     jns .uld_lo
     xor eax, eax
 .uld_lo:
-    cmp eax, 928
+    cmp eax, r8d
     jbe .uld_hi
-    mov eax, 928
+    mov eax, r8d
 .uld_hi:
     imul rax, r9
     xor edx, edx
-    mov r8d, 928
     div r8
 
     cmp dword [seDragMode], 1
@@ -2109,10 +2130,11 @@ se_update_loop_drag:
     pop rbx
     ret
 
-; Slider-Wert anhand virtueller X-Position (ECX = 0..959) aktualisieren, speichern & live anwenden
+; Slider-Wert anhand virtueller X-Position (ECX) aktualisieren (Mode 3=Classic, 4=WideSmp, 5=WideSyn)
 se_update_slider_drag:
     push rbx
-    sub rsp, 0x20
+    push r12
+    sub rsp, 0x28
 
     mov ebx, [seDragParam]
     cmp ebx, 8
@@ -2121,17 +2143,46 @@ se_update_slider_drag:
 .usd_p_ok:
 
     mov eax, ecx
+    cmp dword [seDragMode], 4
+    je .usd_m4
+    cmp dword [seDragMode], 5
+    je .usd_m5
+
+    ; Mode 3: Classic Slider (x=168, w=480)
     sub eax, 168
+    mov r8d, 480
+    lea r12, [seSynthParams]
+    cmp dword [seMode], 0
+    je .usd_scale
+    lea r12, [seSmpParams]
+    jmp .usd_scale
+
+.usd_m4:
+    ; Mode 4: Widescreen SAMPLE-FX Slider (x=192, w=360)
+    sub eax, 192
+    mov r8d, 360
+    mov dword [seMode], 1
+    lea r12, [seSmpParams]
+    jmp .usd_scale
+
+.usd_m5:
+    ; Mode 5: Widescreen SYNTHESIZER Slider (x=936, w=360)
+    sub eax, 936
+    mov r8d, 360
+    mov dword [seMode], 0
+    lea r12, [seSynthParams]
+
+.usd_scale:
+    test eax, eax
     jns .usd_lo
     xor eax, eax
 .usd_lo:
-    cmp eax, 480
+    cmp eax, r8d
     jbe .usd_hi
-    mov eax, 480
+    mov eax, r8d
 .usd_hi:
     imul eax, 100
     xor edx, edx
-    mov r8d, 480
     div r8d
 
     xor r8d, r8d
@@ -2150,10 +2201,9 @@ se_update_slider_drag:
     jbe .usd_cmp
     mov eax, 100
 .usd_cmp:
-    lea rdx, [seParams]
-    cmp eax, [rdx + rbx*4]
+    cmp eax, [r12 + rbx*4]
     je .usd_done
-    mov [rdx + rbx*4], eax
+    mov [r12 + rbx*4], eax
     call samped_save_cur_slot
     mov dword [dirty], 1
 
@@ -2164,7 +2214,8 @@ se_update_slider_drag:
     call samped_apply_cur_mode
 
 .usd_done:
-    add rsp, 0x20
+    add rsp, 0x28
+    pop r12
     pop rbx
     ret
 
@@ -2176,7 +2227,7 @@ samped_mouse_move:
     call se_lparam_to_px
     mov ecx, eax
     cmp dword [seDragMode], 3
-    je .smm_slider
+    jae .smm_slider
     call se_update_loop_drag
     jmp .smm_done
 .smm_slider:
@@ -2197,7 +2248,7 @@ samped_mouse_up:
     call ReleaseCapture
 
     cmp ebx, 3
-    jne .smu_redraw
+    jb .smu_redraw
     cmp dword [seLiveSynth], 0
     je .smu_redraw
     mov eax, [curOct]
@@ -2313,6 +2364,8 @@ samped_mouse_down:
     mov r13d, edx
     mov ebx, r8d
     call samped_load_cur_slot
+    cmp dword [wideMode], 0
+    jne .sm_wide_dispatch
 
     ; Zeile 0 (Kopfzeile): Slot, Loop, Zurueck
     test r13d, r13d
@@ -2721,7 +2774,11 @@ samped_mouse_down:
 
     mov ecx, r13d
     sub ecx, 30
-    lea rdx, [seParams]
+    lea rdx, [seSynthParams]
+    cmp dword [seMode], 0
+    je .sm_sl_arr_ok
+    lea rdx, [seSmpParams]
+.sm_sl_arr_ok:
 
     cmp r12d, 14
     jb .sm_done
@@ -3045,6 +3102,799 @@ samped_mouse_down:
     mov dword [seDragMode], 0
     call stop_recording
     mov dword [sampEdMode], 0
+    jmp .sm_done
+
+; ============================================================================
+; Widescreen-Mausklick im Sample-Editor (124 Spalten, getrennte Sample-FX & Synth Panels)
+; r12d = Spalte (0..123), r13d = Zeile (0..gridRows-1), ebx = Taste (0=L, 1=R)
+; ============================================================================
+.sm_wide_dispatch:
+    ; --- Zeile 0: Kopfzeile ---
+    test r13d, r13d
+    jnz .sw_chk_wave
+
+    ; [ESC = Zurueck Tracker] (Spalten 82..104)
+    cmp r12d, 82
+    jb .sw_top_sp
+    cmp r12d, 104
+    ja .sm_done
+    mov dword [seDragMode], 0
+    call stop_recording
+    mov dword [sampEdMode], 0
+    jmp .sm_done
+
+.sw_top_sp:
+    ; [Slot +] (Spalten 71..78)
+    cmp r12d, 71
+    jb .sw_top_sm
+    cmp r12d, 78
+    ja .sm_done
+    mov eax, [curInst]
+    inc eax
+    and eax, MAX_SAMPS - 1
+    mov [curInst], eax
+    call sync_samp_scroll
+    call samped_sync_sel
+    jmp .sm_done
+
+.sw_top_sm:
+    ; [Slot -] (Spalten 62..69)
+    cmp r12d, 62
+    jb .sw_top_lp
+    cmp r12d, 69
+    ja .sm_done
+    mov eax, [curInst]
+    dec eax
+    and eax, MAX_SAMPS - 1
+    mov [curInst], eax
+    call sync_samp_scroll
+    call samped_sync_sel
+    jmp .sm_done
+
+.sw_top_lp:
+    ; Loop:EIN/AUS (Spalten 51..59)
+    cmp r12d, 51
+    jb .sw_top_slot
+    cmp r12d, 59
+    ja .sm_done
+    call toggle_wav_loop
+    jmp .sm_done
+
+.sw_top_slot:
+    ; Slot:XX (Spalten 16..23)
+    cmp r12d, 16
+    jb .sm_done
+    cmp r12d, 23
+    ja .sm_done
+    mov eax, [curInst]
+    test ebx, ebx
+    jnz .sw_ts_dec
+    inc eax
+    jmp .sw_ts_st
+.sw_ts_dec:
+    dec eax
+.sw_ts_st:
+    and eax, MAX_SAMPS - 1
+    mov [curInst], eax
+    call sync_samp_scroll
+    call samped_sync_sel
+    jmp .sm_done
+
+.sw_chk_wave:
+    ; --- Zeilen 2 .. 2+seWfRows-1: Grosse Wellenform (Breite seWfW = 1456 px) ---
+    cmp r13d, 2
+    jb .sw_chk_act
+    mov eax, [seWfRows]
+    add eax, 2
+    cmp r13d, eax
+    jae .sw_chk_act
+
+    cmp dword [isRecording], 0
+    jne .sm_done
+
+    call samped_sync_sel
+    mov eax, [curInst]
+    and eax, MAX_SAMPS - 1
+    lea rdx, [sampHasPcm]
+    cmp byte [rdx + rax], 0
+    je .sm_done
+    lea rdx, [sampLenTbl]
+    mov r14d, [rdx + rax*4]
+    test r14d, r14d
+    jz .sm_done
+
+    mov ecx, VK_SHIFT
+    call GetKeyState
+    movzx r15d, ax
+    and r15d, 0x8000
+
+    test ebx, ebx
+    jnz .sw_wave_norm
+    test r15d, r15d
+    jnz .sw_wave_norm
+
+    mov ecx, [curInst]
+    and ecx, MAX_SAMPS - 1
+    lea rdx, [sampLoopEndTbl]
+    mov r10d, [rdx + rcx*4]
+    cmp r10d, r14d
+    ja .sw_wave_norm
+    lea rdx, [sampLoopStartTbl]
+    mov r11d, [rdx + rcx*4]
+    cmp r10d, r11d
+    jbe .sw_wave_norm
+
+    mov r8d, [seWfW]
+    lea r9d, [r8 - 2]
+
+    mov eax, r11d
+    imul rax, r8
+    xor edx, edx
+    div r14
+    cmp eax, r9d
+    jbe .sw_ps_ok
+    mov eax, r9d
+.sw_ps_ok:
+    add eax, 16
+    mov r11d, [mousePxX]
+    sub r11d, eax
+    jns .sw_d1_p
+    neg r11d
+.sw_d1_p:
+
+    mov eax, r10d
+    imul rax, r8
+    xor edx, edx
+    div r14
+    cmp eax, r9d
+    jbe .sw_pe_ok
+    mov eax, r9d
+.sw_pe_ok:
+    add eax, 16
+    mov r10d, [mousePxX]
+    sub r10d, eax
+    jns .sw_d2_p
+    neg r10d
+.sw_d2_p:
+
+    cmp r11d, 18
+    jbe .sw_grab_hit
+    cmp r10d, 18
+    ja .sw_wave_norm
+
+.sw_grab_hit:
+    mov dword [seDragMode], 1
+    cmp r11d, r10d
+    jb .sw_grab_go
+    ja .sw_grab_end
+    mov eax, [seWfRows]
+    shr eax, 1
+    add eax, 2
+    cmp r13d, eax
+    jbe .sw_grab_go
+.sw_grab_end:
+    mov dword [seDragMode], 2
+.sw_grab_go:
+    mov rcx, [hWnd]
+    call SetCapture
+    mov ecx, [mousePxX]
+    call se_update_loop_drag
+    jmp .sm_done
+
+.sw_wave_norm:
+    mov r8d, [seWfW]
+    lea r9d, [r8 - 1]
+    mov eax, [mousePxX]
+    sub eax, 16
+    jns .sw_px_lo
+    xor eax, eax
+.sw_px_lo:
+    cmp eax, r9d
+    jbe .sw_px_hi
+    mov eax, r9d
+.sw_px_hi:
+    imul rax, r14
+    xor edx, edx
+    div r8
+    mov r10d, eax
+
+    test r15d, r15d
+    jnz .sw_wave_lp
+
+    test ebx, ebx
+    jnz .sw_sel_end
+    mov [seSelStart], r10d
+    cmp r10d, [seSelEnd]
+    jbe .sm_done
+    mov [seSelEnd], r14d
+    jmp .sm_done
+.sw_sel_end:
+    inc r10d
+    mov [seSelEnd], r10d
+    cmp r10d, [seSelStart]
+    jae .sm_done
+    mov dword [seSelStart], 0
+    jmp .sm_done
+
+.sw_wave_lp:
+    mov ecx, [curInst]
+    and ecx, MAX_SAMPS - 1
+    test ebx, ebx
+    jnz .sw_lp_e
+    lea rdx, [sampLoopStartTbl]
+    mov [rdx + rcx*4], r10d
+    lea rdx, [sampLoopEndTbl]
+    cmp dword [rdx + rcx*4], 0xFFFFF
+    jae .sw_lp_ae
+    cmp [rdx + rcx*4], r10d
+    ja .sm_done
+.sw_lp_ae:
+    mov [rdx + rcx*4], r14d
+    jmp .sm_done
+.sw_lp_e:
+    inc r10d
+    lea rdx, [sampLoopEndTbl]
+    mov [rdx + rcx*4], r10d
+    lea rdx, [sampLoopStartTbl]
+    cmp [rdx + rcx*4], r10d
+    jb .sm_done
+    mov dword [rdx + rcx*4], 0
+    jmp .sm_done
+
+.sw_chk_act:
+    ; --- Zeile seActRow: Aktions-Buttons ---
+    cmp r13d, [seActRow]
+    jne .sw_chk_fx
+    test ebx, ebx
+    jnz .sm_done
+
+    cmp r12d, 1
+    jb .sm_done
+    cmp r12d, 11
+    ja .sw_act_rec
+    call stop_recording
+    call load_wav_dialog
+    call samped_sync_sel
+    jmp .sm_done
+.sw_act_rec:
+    cmp r12d, 13
+    jb .sm_done
+    cmp r12d, 23
+    ja .sw_act_play
+    call start_recording
+    jmp .sm_done
+.sw_act_play:
+    cmp r12d, 25
+    jb .sm_done
+    cmp r12d, 35
+    ja .sw_act_stop
+    mov eax, [curOct]
+    imul eax, 12
+    call samped_preview
+    jmp .sm_done
+.sw_act_stop:
+    cmp r12d, 37
+    jb .sm_done
+    cmp r12d, 46
+    ja .sw_act_lp
+    call silence_audio
+    jmp .sm_done
+.sw_act_lp:
+    cmp r12d, 48
+    jb .sm_done
+    cmp r12d, 58
+    ja .sw_act_s2l
+    call toggle_wav_loop
+    jmp .sm_done
+.sw_act_s2l:
+    cmp r12d, 60
+    jb .sm_done
+    cmp r12d, 74
+    ja .sw_act_trim
+    call samped_sync_sel
+    mov eax, [curInst]
+    and eax, MAX_SAMPS - 1
+    lea rdx, [sampHasPcm]
+    cmp byte [rdx + rax], 0
+    je .sm_done
+    mov ecx, [seSelStart]
+    mov edx, [seSelEnd]
+    cmp edx, ecx
+    jbe .sm_done
+    lea r8, [sampLoopStartTbl]
+    mov [r8 + rax*4], ecx
+    lea r8, [sampLoopEndTbl]
+    mov [r8 + rax*4], edx
+    lea rcx, [stLoopOn]
+    call set_status
+    jmp .sm_done
+.sw_act_trim:
+    cmp r12d, 76
+    jb .sm_done
+    cmp r12d, 88
+    ja .sw_act_clr
+    call se_fx_trim
+    jmp .sm_done
+.sw_act_clr:
+    cmp r12d, 90
+    jb .sm_done
+    cmp r12d, 102
+    ja .sm_done
+    call unload_wav_slot
+    call samped_sync_sel
+    jmp .sm_done
+
+.sw_chk_fx:
+    ; --- Zeile seFxRow: 7 destruktive Auswahl-Effekte ---
+    cmp r13d, [seFxRow]
+    jne .sw_chk_wave_row
+    test ebx, ebx
+    jnz .sm_done
+
+    cmp r12d, 14
+    jb .sm_done
+    cmp r12d, 28
+    ja .sw_fx1
+    call se_fx_normalize
+    jmp .sm_done
+.sw_fx1:
+    cmp r12d, 30
+    jb .sm_done
+    cmp r12d, 41
+    ja .sw_fx2
+    call se_fx_fade_in
+    jmp .sm_done
+.sw_fx2:
+    cmp r12d, 43
+    jb .sm_done
+    cmp r12d, 54
+    ja .sw_fx3
+    call se_fx_fade_out
+    jmp .sm_done
+.sw_fx3:
+    cmp r12d, 56
+    jb .sm_done
+    cmp r12d, 68
+    ja .sw_fx4
+    call se_fx_reverse
+    jmp .sm_done
+.sw_fx4:
+    cmp r12d, 70
+    jb .sm_done
+    cmp r12d, 82
+    ja .sw_fx5
+    call se_fx_boost
+    jmp .sm_done
+.sw_fx5:
+    cmp r12d, 84
+    jb .sm_done
+    cmp r12d, 94
+    ja .sw_fx6
+    call se_fx_halve
+    jmp .sm_done
+.sw_fx6:
+    cmp r12d, 96
+    jb .sm_done
+    cmp r12d, 110
+    ja .sm_done
+    mov dword [seLastSlot], -1
+    call samped_sync_sel
+    jmp .sm_done
+
+.sw_chk_wave_row:
+    ; --- Zeile sePanelRow + 2 (Rechts: Welle & Pulsbreite im SYNTH-Panel) ---
+    mov eax, [sePanelRow]
+    add eax, 2
+    cmp r13d, eax
+    jne .sw_chk_sliders
+
+    ; Pulsbreite Pw: 50% (Spalten 113..120, L:+5 / R:-5)
+    cmp r12d, 113
+    jb .sw_w_btns
+    cmp r12d, 120
+    ja .sm_done
+    mov eax, [sePulse]
+    test ebx, ebx
+    jnz .sw_pw_dec
+    add eax, 5
+    cmp eax, 90
+    jbe .sw_pw_st
+    mov eax, 90
+    jmp .sw_pw_st
+.sw_pw_dec:
+    sub eax, 5
+    cmp eax, 10
+    jge .sw_pw_st
+    mov eax, 10
+.sw_pw_st:
+    mov [sePulse], eax
+    mov dword [seMode], 0
+    call samped_save_cur_slot
+    cmp dword [seLiveSynth], 0
+    je .sm_done
+    mov ecx, 2
+    mov edx, 1
+    call synth_render_to_slot
+    jmp .sm_done
+
+.sw_w_btns:
+    ; 5 Wellenform-Buttons ab Spalte 72, Schritt 8, Breite 7
+    test ebx, ebx
+    jnz .sm_done
+    cmp r12d, 72
+    jb .sm_done
+    cmp r12d, 110
+    ja .sm_done
+    mov eax, r12d
+    sub eax, 72
+    xor edx, edx
+    mov ecx, 8
+    div ecx
+    cmp eax, 5
+    jae .sm_done
+    cmp edx, 7
+    jae .sm_done
+    mov [seWave], eax
+    mov dword [seMode], 0
+    call samped_save_cur_slot
+    cmp dword [seLiveSynth], 0
+    je .sm_done
+    mov ecx, 2
+    mov edx, 1
+    call synth_render_to_slot
+    jmp .sm_done
+
+.sw_chk_sliders:
+    ; --- 9 Slider-Zeilen ab sePanelRow + 4 (Schritt seSlStep) fuer LINKS (Sample-FX) & RECHTS (Synth) ---
+    mov eax, [sePanelRow]
+    add eax, 4
+    mov ecx, r13d
+    sub ecx, eax
+    js .sw_chk_btnrow
+    cmp dword [seSlStep], 2
+    jne .sw_sl_idx
+    test ecx, 1
+    jnz .sw_chk_btnrow
+    shr ecx, 1
+.sw_sl_idx:
+    cmp ecx, 8
+    ja .sw_chk_btnrow
+
+    ; Links = SAMPLE-FX Panel (Spalten 16..57)
+    cmp r12d, 60
+    ja .sw_sl_right
+
+    cmp r12d, 16
+    jb .sm_done
+    cmp r12d, 45
+    ja .sw_sl_l_min
+    test ebx, ebx
+    jnz .sm_done
+    mov dword [seDragMode], 4
+    mov [seDragParam], ecx
+    mov rcx, [hWnd]
+    call SetCapture
+    mov ecx, [mousePxX]
+    call se_update_slider_drag
+    jmp .sm_done
+
+.sw_sl_l_min:
+    lea rdx, [seSmpParams]
+    cmp r12d, 47
+    jb .sm_done
+    cmp r12d, 49
+    ja .sw_sl_l_pls
+    mov eax, [rdx + rcx*4]
+    sub eax, 5
+    jmp .sw_sl_l_cl
+.sw_sl_l_pls:
+    cmp r12d, 55
+    jb .sm_done
+    cmp r12d, 57
+    ja .sm_done
+    mov eax, [rdx + rcx*4]
+    add eax, 5
+.sw_sl_l_cl:
+    xor r8d, r8d
+    cmp ecx, 4
+    je .sw_sl_lm5
+    cmp ecx, 7
+    jne .sw_sl_lmn
+.sw_sl_lm5:
+    mov r8d, 5
+.sw_sl_lmn:
+    cmp eax, r8d
+    jge .sw_sl_lmx
+    mov eax, r8d
+.sw_sl_lmx:
+    cmp eax, 100
+    jle .sw_sl_lst
+    mov eax, 100
+.sw_sl_lst:
+    mov [rdx + rcx*4], eax
+    mov dword [seMode], 1
+    call samped_save_cur_slot
+    cmp dword [seLiveSynth], 0
+    je .sm_done
+    mov ecx, 2
+    mov edx, 1
+    call sample_fx_render_to_slot
+    jmp .sm_done
+
+.sw_sl_right:
+    ; Rechts = SYNTHESIZER Panel (Spalten 78..119)
+    cmp r12d, 78
+    jb .sm_done
+    cmp r12d, 107
+    ja .sw_sl_r_min
+    test ebx, ebx
+    jnz .sm_done
+    mov dword [seDragMode], 5
+    mov [seDragParam], ecx
+    mov rcx, [hWnd]
+    call SetCapture
+    mov ecx, [mousePxX]
+    call se_update_slider_drag
+    jmp .sm_done
+
+.sw_sl_r_min:
+    lea rdx, [seSynthParams]
+    cmp r12d, 109
+    jb .sm_done
+    cmp r12d, 111
+    ja .sw_sl_r_pls
+    mov eax, [rdx + rcx*4]
+    sub eax, 5
+    jmp .sw_sl_r_cl
+.sw_sl_r_pls:
+    cmp r12d, 117
+    jb .sm_done
+    cmp r12d, 119
+    ja .sm_done
+    mov eax, [rdx + rcx*4]
+    add eax, 5
+.sw_sl_r_cl:
+    xor r8d, r8d
+    cmp ecx, 4
+    je .sw_sl_rm5
+    cmp ecx, 7
+    jne .sw_sl_rmn
+.sw_sl_rm5:
+    mov r8d, 5
+.sw_sl_rmn:
+    cmp eax, r8d
+    jge .sw_sl_rmx
+    mov eax, r8d
+.sw_sl_rmx:
+    cmp eax, 100
+    jle .sw_sl_rst
+    mov eax, 100
+.sw_sl_rst:
+    mov [rdx + rcx*4], eax
+    mov dword [seMode], 0
+    call samped_save_cur_slot
+    cmp dword [seLiveSynth], 0
+    je .sm_done
+    mov ecx, 2
+    mov edx, 1
+    call synth_render_to_slot
+    jmp .sm_done
+
+.sw_chk_btnrow:
+    ; --- Zeile seBtnRow: Links Sample-FX Buttons, Rechts 6 Synth-Presets ---
+    cmp r13d, [seBtnRow]
+    jne .sw_chk_btnrow2
+    test ebx, ebx
+    jnz .sm_done
+
+    ; [Sample-FX anwenden] (Spalten 3..22)
+    cmp r12d, 3
+    jb .sm_done
+    cmp r12d, 22
+    ja .sw_br_orig
+    mov dword [seMode], 1
+    call samped_save_cur_slot
+    mov ecx, 2
+    mov edx, 1
+    call sample_fx_render_to_slot
+    jmp .sm_done
+
+.sw_br_orig:
+    ; [Original wiederherstellen] (Spalten 25..51)
+    cmp r12d, 25
+    jb .sm_done
+    cmp r12d, 51
+    ja .sw_br_pre
+    call samped_restore_orig
+    jmp .sm_done
+
+.sw_br_pre:
+    ; 6 Synth-Presets ueber seWPreBtnPos
+    xor ecx, ecx
+    lea rdx, [seWPreBtnPos]
+.sw_pre_lp:
+    movzx eax, byte [rdx + rcx*2 + 0]
+    cmp r12d, eax
+    jb .sw_pre_nx
+    movzx r8d, byte [rdx + rcx*2 + 1]
+    add eax, r8d
+    cmp r12d, eax
+    jae .sw_pre_nx
+    call apply_synth_preset
+    jmp .sm_done
+.sw_pre_nx:
+    inc ecx
+    cmp ecx, 6
+    jb .sw_pre_lp
+    jmp .sm_done
+
+.sw_chk_btnrow2:
+    ; --- Zeile seBtnRow + 2: Rechts [Synth erzeugen] [Auto-Loop] [Live-Edit] ---
+    mov eax, [seBtnRow]
+    add eax, 2
+    cmp r13d, eax
+    jne .sw_chk_rec
+    test ebx, ebx
+    jnz .sm_done
+
+    ; [Synth erzeugen] (Spalten 65..80)
+    cmp r12d, 65
+    jb .sm_done
+    cmp r12d, 80
+    ja .sw_br2_al
+    mov dword [seMode], 0
+    call samped_save_cur_slot
+    mov ecx, 2
+    mov edx, 1
+    call synth_render_to_slot
+    jmp .sm_done
+
+.sw_br2_al:
+    ; [Auto-Loop: AN/AUS] (Spalten 82..97)
+    cmp r12d, 82
+    jb .sm_done
+    cmp r12d, 97
+    ja .sw_br2_lv
+    xor dword [seAutoLoop], 1
+    mov dword [seMode], 0
+    call samped_save_cur_slot
+    cmp dword [seLiveSynth], 0
+    je .sm_done
+    mov ecx, [seAutoLoop]
+    mov edx, 1
+    call synth_render_to_slot
+    jmp .sm_done
+
+.sw_br2_lv:
+    ; [Live-Edit: AN/AUS] (Spalten 99..114)
+    cmp r12d, 99
+    jb .sm_done
+    cmp r12d, 114
+    ja .sm_done
+    xor dword [seLiveSynth], 1
+    jmp .sm_done
+
+.sw_chk_rec:
+    ; --- Zeile seRecRow: Mikrofon-Auswahl ---
+    cmp r13d, [seRecRow]
+    jne .sw_chk_bot
+
+    cmp r12d, 6
+    jb .sm_done
+    cmp r12d, 8
+    ja .sw_rec_name
+    test ebx, ebx
+    jnz .sm_done
+    mov ecx, -1
+    call samped_cycle_rec_dev
+    jmp .sm_done
+.sw_rec_name:
+    cmp r12d, 10
+    jb .sm_done
+    cmp r12d, 45
+    ja .sw_rec_next
+    mov ecx, 1
+    test ebx, ebx
+    jz .sw_rec_go
+    mov ecx, -1
+.sw_rec_go:
+    call samped_cycle_rec_dev
+    jmp .sm_done
+.sw_rec_next:
+    cmp r12d, 47
+    jb .sm_done
+    cmp r12d, 49
+    ja .sm_done
+    test ebx, ebx
+    jnz .sm_done
+    mov ecx, 1
+    call samped_cycle_rec_dev
+    jmp .sm_done
+
+.sw_chk_bot:
+    ; --- Zeile botBarRow: Fusszeile ---
+    cmp r13d, [botBarRow]
+    jne .sm_done
+
+    ; [?] Hilfe (Spalten 119..121)
+    cmp r12d, 119
+    jb .sw_bot_back
+    cmp r12d, 121
+    ja .sm_done
+    xor dword [showHelp], 1
+    jmp .sm_done
+
+.sw_bot_back:
+    ; [ESC = Tracker] (Spalten 90..104)
+    cmp r12d, 90
+    jb .sw_bot_play
+    cmp r12d, 104
+    ja .sm_done
+    mov dword [seDragMode], 0
+    call stop_recording
+    mov dword [sampEdMode], 0
+    jmp .sm_done
+
+.sw_bot_play:
+    ; [Leertaste = Song Play/Stop] (Spalten 20..47)
+    cmp r12d, 20
+    jb .sw_bot_oct
+    cmp r12d, 47
+    ja .sm_done
+    test ebx, ebx
+    jnz .sm_done
+    xor dword [isPlaying], 1
+    cmp dword [isPlaying], 0
+    jne .sw_bp_start
+    call silence_audio
+    jmp .sm_done
+.sw_bp_start:
+    mov eax, [curPat]
+    mov [playPat], eax
+    mov [dispPlayPat], eax
+    mov eax, [editRow]
+    mov [playRow], eax
+    mov [dispPlayRow], eax
+    mov dword [needPatTempo], 0
+    mov dword [tickSamples], 1
+    jmp .sm_done
+
+.sw_bot_oct:
+    ; Oktave:X (Spalten 10..17)
+    cmp r12d, 10
+    jb .sw_bot_slot
+    cmp r12d, 17
+    ja .sm_done
+    test ebx, ebx
+    jnz .sw_bo_dec
+    cmp dword [curOct], 3
+    jae .sm_done
+    inc dword [curOct]
+    jmp .sm_done
+.sw_bo_dec:
+    cmp dword [curOct], 0
+    je .sm_done
+    dec dword [curOct]
+    jmp .sm_done
+
+.sw_bot_slot:
+    ; Slot:XX (Spalten 1..7)
+    cmp r12d, 1
+    jb .sm_done
+    cmp r12d, 7
+    ja .sm_done
+    mov eax, [curInst]
+    test ebx, ebx
+    jnz .sw_bs_dec
+    inc eax
+    jmp .sw_bs_st
+.sw_bs_dec:
+    dec eax
+.sw_bs_st:
+    and eax, MAX_SAMPS - 1
+    mov [curInst], eax
+    call sync_samp_scroll
+    call samped_sync_sel
 
 .sm_done:
     add rsp, 0x20
@@ -3070,6 +3920,9 @@ draw_samped_screen:
     sub rsp, 0x58
 
     call samped_sync_sel
+
+    cmp dword [wideMode], 0
+    jne .draw_wide
 
     xor ecx, ecx
     xor edx, edx
@@ -3821,7 +4674,11 @@ draw_samped_screen:
     mov r10d, COL_BEAT
     call fill_rect
 
-    lea rsi, [seParams]
+    lea rsi, [seSynthParams]
+    cmp dword [seMode], 0
+    je .ds_sl_p_ok
+    lea rsi, [seSmpParams]
+.ds_sl_p_ok:
     mov r15d, [rsi + rdi*4]
     imul eax, r15d, 480
     xor edx, edx
@@ -4305,7 +5162,1442 @@ draw_samped_screen:
     mov r9d, 3
     mov r10d, COL_WHITE
     call draw_text
+    jmp .ds_epilog
 
+; ============================================================================
+; WIDESCREEN SAMPLE- & INSTRUMENT-EDITOR (124 Spalten, getrennte Sample-FX & Synth Panels)
+; ============================================================================
+.draw_wide:
+    mov ebx, [curInst]
+    and ebx, MAX_SAMPS - 1
+    lea rdx, [sampHasPcm]
+    movzx r12d, byte [rdx + rbx]
+    lea rdx, [sampLenTbl]
+    mov r13d, [rdx + rbx*4]
+
+    ; --- Zeile 0: Widescreen-Kopfzeile ---
+    mov al, bl
+    lea r8, [seWTopBar + 21]
+    call fmt_hex2
+
+    mov eax, ebx
+    imul eax, 12
+    lea rsi, [sampNames]
+    add rsi, rax
+    lea rdi, [seWTopBar + 24]
+    mov ecx, 12
+    rep movsb
+
+    mov eax, r13d
+    cmp dword [isRecording], 0
+    je .dw_tlen
+    mov eax, [recWritePos]
+.dw_tlen:
+    lea r8, [seWTopBar + 44]
+    call fmt_hex5
+
+    lea rdx, [sampLoopEndTbl]
+    mov eax, [rdx + rbx*4]
+    mov byte [seWTopBar + 56], 'A'
+    mov byte [seWTopBar + 57], 'U'
+    mov byte [seWTopBar + 58], 'S'
+    test r12d, r12d
+    jz .dw_tlp
+    cmp eax, r13d
+    ja .dw_tlp
+    mov byte [seWTopBar + 56], 'E'
+    mov byte [seWTopBar + 57], 'I'
+    mov byte [seWTopBar + 58], 'N'
+.dw_tlp:
+    lea rsi, [topBar + 72]
+    lea rdi, [seWTopBar + 116]
+    mov ecx, 7
+    rep movsb
+
+    xor ecx, ecx
+    xor edx, edx
+    lea r8, [seWTopBar]
+    mov r9d, 123
+    mov r10d, COL_CYAN
+    call draw_text
+
+    ; Hervorgehobene Buttons in Kopfzeile: [Slot -] [Slot +] [ESC = Zurueck Tracker]
+    mov ecx, 62 * CHAR_W
+    xor edx, edx
+    mov r8d, 8 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_BEAT
+    call fill_rect
+    mov ecx, 62
+    xor edx, edx
+    lea r8, [seWTopBar + 62]
+    mov r9d, 8
+    mov r10d, COL_CYAN
+    call draw_text
+
+    mov ecx, 71 * CHAR_W
+    xor edx, edx
+    mov r8d, 8 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_BEAT
+    call fill_rect
+    mov ecx, 71
+    xor edx, edx
+    lea r8, [seWTopBar + 71]
+    mov r9d, 8
+    mov r10d, COL_CYAN
+    call draw_text
+
+    mov ecx, 82 * CHAR_W
+    xor edx, edx
+    mov r8d, 23 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_HDR_ON
+    call fill_rect
+    mov ecx, 82
+    xor edx, edx
+    lea r8, [seWTopBar + 82]
+    mov r9d, 23
+    mov r10d, COL_WHITE
+    call draw_text
+
+    ; --- Zeilen 2 .. 2+seWfRows-1: Grosse Wellenform-Box (x=12..1476, innen x=16, w=1456) ---
+    mov eax, [seWfRows]
+    imul eax, CHAR_H
+    mov r9d, eax                        ; outerH
+    sub eax, 8
+    mov [rsp + 0x48], eax               ; innerH
+    shr eax, 1
+    lea edx, [rax + 28]
+    mov [rsp + 0x4C], edx               ; midY
+    sub eax, 4
+    mov [rsp + 0x50], eax               ; amp
+
+    mov ecx, 12
+    mov edx, 24
+    mov r8d, 1464
+    mov r10d, COL_HDR_ON
+    cmp dword [isRecording], 0
+    je .dw_wfr
+    mov r10d, COL_PURPHI
+.dw_wfr:
+    call fill_rect
+
+    mov ecx, 16
+    mov edx, 28
+    mov r8d, 1456
+    mov r9d, [rsp + 0x48]
+    mov r10d, COL_BLACK
+    call fill_rect
+
+    cmp dword [isRecording], 0
+    jne .dw_rec_wf
+
+    test r12d, r12d
+    jz .dw_no_pcm
+    test r13d, r13d
+    jz .dw_no_pcm
+
+    ; Auswahlbereich hinterlegen
+    mov eax, [seSelStart]
+    imul rax, 1456
+    xor edx, edx
+    div r13
+    mov r14d, eax
+
+    mov eax, [seSelEnd]
+    imul rax, 1456
+    xor edx, edx
+    div r13
+    mov r15d, eax
+    cmp r15d, r14d
+    jbe .dw_no_sel
+    lea ecx, [r14 + 16]
+    mov edx, 28
+    mov r8d, r15d
+    sub r8d, r14d
+    mov r9d, [rsp + 0x48]
+    mov r10d, COL_BEAT
+    call fill_rect
+.dw_no_sel:
+
+    mov ecx, 16
+    mov edx, [rsp + 0x4C]
+    mov r8d, 1456
+    mov r9d, 1
+    mov r10d, COL_DOT
+    call fill_rect
+
+    ; Wellenform in 728 Spalten a 2 px zeichnen
+    mov eax, ebx
+    shl eax, 17
+    lea rbp, [pcmSlots]
+    add rbp, rax
+
+    xor edi, edi
+.dw_wf_loop:
+    mov eax, edi
+    imul rax, r13
+    xor edx, edx
+    mov ecx, 728
+    div rcx
+    mov r8d, eax
+
+    lea eax, [edi + 1]
+    imul rax, r13
+    xor edx, edx
+    mov ecx, 728
+    div rcx
+    mov r9d, eax
+    cmp r9d, r8d
+    ja .dw_wf_sp
+    lea r9d, [r8 + 1]
+.dw_wf_sp:
+    cmp r9d, r13d
+    jbe .dw_wf_cp
+    mov r9d, r13d
+.dw_wf_cp:
+    mov ecx, r9d
+    sub ecx, r8d
+    mov r11d, 1
+    cmp ecx, 16
+    jbe .dw_wf_st
+    mov r11d, ecx
+    shr r11d, 4
+.dw_wf_st:
+    mov r10d, 128
+    mov esi, 128
+    mov ecx, r8d
+.dw_wf_mm:
+    movzx eax, byte [rbp + rcx]
+    cmp eax, r10d
+    jae .dw_wf_nm
+    mov r10d, eax
+.dw_wf_nm:
+    cmp eax, esi
+    jbe .dw_wf_nx
+    mov esi, eax
+.dw_wf_nx:
+    add ecx, r11d
+    cmp ecx, r9d
+    jb .dw_wf_mm
+
+    mov eax, esi
+    sub eax, 128
+    imul eax, [rsp + 0x50]
+    sar eax, 7
+    mov ecx, [rsp + 0x4C]
+    sub ecx, eax
+
+    mov eax, r10d
+    sub eax, 128
+    imul eax, [rsp + 0x50]
+    sar eax, 7
+    mov edx, [rsp + 0x4C]
+    sub edx, eax
+    cmp edx, ecx
+    jge .dw_wf_h
+    xchg ecx, edx
+.dw_wf_h:
+    sub edx, ecx
+    inc edx
+    mov r9d, edx
+    mov edx, ecx
+
+    lea ecx, [rdi*2 + 16]
+    mov r8d, 2
+    mov r10d, COL_TEAL
+    lea eax, [rdi*2]
+    cmp eax, r14d
+    jb .dw_wf_dr
+    cmp eax, r15d
+    jae .dw_wf_dr
+    mov r10d, COL_CYAN
+.dw_wf_dr:
+    call fill_rect
+
+    inc edi
+    cmp edi, 728
+    jb .dw_wf_loop
+
+    ; Loop-Linien mit greifbaren Anfassern (L oben, E unten - exakt ausgerichtet!)
+    lea rdx, [sampLoopEndTbl]
+    mov r15d, [rdx + rbx*4]
+    cmp r15d, r13d
+    ja .dw_wf_done
+    lea rdx, [sampLoopStartTbl]
+    mov r14d, [rdx + rbx*4]
+    cmp r15d, r14d
+    jbe .dw_wf_done
+
+    mov eax, r14d
+    imul rax, 1456
+    xor edx, edx
+    div r13
+    cmp eax, 1454
+    jbe .dw_lps_ok
+    mov eax, 1454
+.dw_lps_ok:
+    add eax, 16
+    mov [rsp + 0x40], eax
+
+    mov ecx, eax
+    mov edx, 28
+    mov r8d, 2
+    mov r9d, [rsp + 0x48]
+    mov r10d, COL_WHITE
+    cmp dword [seDragMode], 1
+    jne .dw_lps_c
+    mov r8d, 3
+    mov r10d, COL_CURSOR
+.dw_lps_c:
+    call fill_rect
+
+    mov eax, [rsp + 0x40]
+    sub eax, 6
+    cmp eax, 16
+    jge .dw_lps_x1
+    mov eax, 16
+.dw_lps_x1:
+    cmp eax, 1458
+    jle .dw_lps_x2
+    mov eax, 1458
+.dw_lps_x2:
+    mov [rsp + 0x44], eax
+    mov ecx, eax
+    mov edx, 28
+    mov r8d, 14
+    mov r9d, 14
+    mov r10d, COL_WHITE
+    cmp dword [seDragMode], 1
+    jne .dw_lps_gc
+    mov r10d, COL_CURSOR
+.dw_lps_gc:
+    call fill_rect
+
+    mov ecx, [rsp + 0x44]
+    add ecx, 3
+    mov edx, 29
+    lea r8, [txtLoopL]
+    mov r10d, COL_BLACK
+    call draw_char_px
+
+    mov eax, r15d
+    imul rax, 1456
+    xor edx, edx
+    div r13
+    cmp eax, 1454
+    jbe .dw_lpe_ok
+    mov eax, 1454
+.dw_lpe_ok:
+    add eax, 16
+    mov [rsp + 0x40], eax
+
+    mov ecx, eax
+    mov edx, 28
+    mov r8d, 2
+    mov r9d, [rsp + 0x48]
+    mov r10d, COL_PURPHI
+    cmp dword [seDragMode], 2
+    jne .dw_lpe_c
+    mov r8d, 3
+    mov r10d, COL_CURSOR
+.dw_lpe_c:
+    call fill_rect
+
+    mov eax, [rsp + 0x40]
+    sub eax, 6
+    cmp eax, 16
+    jge .dw_lpe_x1
+    mov eax, 16
+.dw_lpe_x1:
+    cmp eax, 1458
+    jle .dw_lpe_x2
+    mov eax, 1458
+.dw_lpe_x2:
+    mov [rsp + 0x44], eax
+    mov ecx, eax
+    mov edx, 28
+    add edx, [rsp + 0x48]
+    sub edx, 14
+    mov r14d, edx                       ; y des E-Anfassers merken
+    mov r8d, 14
+    mov r9d, 14
+    mov r10d, COL_PURPHI
+    cmp dword [seDragMode], 2
+    jne .dw_lpe_gc
+    mov r10d, COL_CURSOR
+.dw_lpe_gc:
+    call fill_rect
+
+    mov ecx, [rsp + 0x44]
+    add ecx, 3
+    lea edx, [r14 + 1]
+    lea r8, [txtLoopE]
+    mov r10d, COL_WHITE
+    cmp dword [seDragMode], 2
+    jne .dw_lpe_tc
+    mov r10d, COL_BLACK
+.dw_lpe_tc:
+    call draw_char_px
+    jmp .dw_wf_done
+
+.dw_rec_wf:
+    mov ecx, 16
+    mov edx, [rsp + 0x4C]
+    mov r8d, 1456
+    mov r9d, 1
+    mov r10d, COL_DOT
+    call fill_rect
+
+    mov r15d, [recWritePos]
+    mov eax, r15d
+    imul rax, 728
+    shr rax, 17
+    cmp eax, 728
+    jbe .dw_rw_cc
+    mov eax, 728
+.dw_rw_cc:
+    mov r14d, eax
+    test r14d, r14d
+    jz .dw_rw_hd
+
+    lea rbp, [recBuf]
+    xor edi, edi
+.dw_rw_loop:
+    mov eax, edi
+    shl rax, 17
+    xor edx, edx
+    mov ecx, 728
+    div rcx
+    mov r8d, eax
+
+    lea eax, [edi + 1]
+    shl rax, 17
+    xor edx, edx
+    mov ecx, 728
+    div rcx
+    mov r9d, eax
+    cmp r9d, r15d
+    jbe .dw_rw_cp
+    mov r9d, r15d
+.dw_rw_cp:
+    cmp r9d, r8d
+    jbe .dw_rw_nx
+
+    mov r10d, 128
+    mov esi, 128
+    mov ecx, r8d
+.dw_rw_mm:
+    movzx eax, byte [rbp + rcx]
+    cmp eax, r10d
+    jae .dw_rw_nm
+    mov r10d, eax
+.dw_rw_nm:
+    cmp eax, esi
+    jbe .dw_rw_nxm
+    mov esi, eax
+.dw_rw_nxm:
+    add ecx, 16
+    cmp ecx, r9d
+    jb .dw_rw_mm
+
+    mov eax, esi
+    sub eax, 128
+    imul eax, [rsp + 0x50]
+    sar eax, 7
+    mov ecx, [rsp + 0x4C]
+    sub ecx, eax
+
+    mov eax, r10d
+    sub eax, 128
+    imul eax, [rsp + 0x50]
+    sar eax, 7
+    mov edx, [rsp + 0x4C]
+    sub edx, eax
+    cmp edx, ecx
+    jge .dw_rw_h
+    xchg ecx, edx
+.dw_rw_h:
+    sub edx, ecx
+    inc edx
+    mov r9d, edx
+    mov edx, ecx
+    lea ecx, [rdi*2 + 16]
+    mov r8d, 2
+    mov r10d, COL_PURPHI
+    call fill_rect
+.dw_rw_nx:
+    inc edi
+    cmp edi, r14d
+    jb .dw_rw_loop
+
+.dw_rw_hd:
+    lea ecx, [r14*2 + 16]
+    cmp ecx, 1470
+    jbe .dw_rw_ho
+    mov ecx, 1470
+.dw_rw_ho:
+    mov edx, 28
+    mov r8d, 2
+    mov r9d, [rsp + 0x48]
+    mov r10d, COL_WHITE
+    call fill_rect
+    jmp .dw_wf_done
+
+.dw_no_pcm:
+    mov ecx, 16
+    mov edx, [rsp + 0x4C]
+    mov r8d, 1456
+    mov r9d, 1
+    mov r10d, COL_DOT
+    call fill_rect
+
+    mov ecx, 24
+    mov edx, [seWfRows]
+    shr edx, 1
+    add edx, 2
+    lea r8, [seEmptyMsg]
+    mov r9d, 76
+    mov r10d, COL_NOTE
+    call draw_text
+
+.dw_wf_done:
+    ; --- Zeile seInfoRow: Marker- & Maus-Info ---
+    mov eax, [seSelStart]
+    lea r8, [seWInfoBar + 10]
+    call fmt_hex5
+    mov eax, [seSelEnd]
+    lea r8, [seWInfoBar + 16]
+    call fmt_hex5
+    lea rdx, [sampLoopStartTbl]
+    mov eax, [rdx + rbx*4]
+    lea r8, [seWInfoBar + 30]
+    call fmt_hex5
+    lea rdx, [sampLoopEndTbl]
+    mov eax, [rdx + rbx*4]
+    lea r8, [seWInfoBar + 36]
+    call fmt_hex5
+
+    xor ecx, ecx
+    mov edx, [seInfoRow]
+    lea r8, [seWInfoBar]
+    mov r9d, 123
+    mov r10d, COL_NOTE
+    call draw_text
+
+    ; --- Zeile seActRow: Aktions-Buttons ---
+    mov r14d, [seActRow]
+    mov r15d, r14d
+    imul r15d, CHAR_H
+
+    mov ecx, 1 * CHAR_W
+    mov edx, r15d
+    mov r8d, 11 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_HDR_ON
+    call fill_rect
+    mov ecx, 1
+    mov edx, r14d
+    lea r8, [seWActBar + 1]
+    mov r9d, 11
+    mov r10d, COL_WHITE
+    call draw_text
+
+    mov ecx, 13 * CHAR_W
+    mov edx, r15d
+    mov r8d, 11 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_PURP
+    lea rbp, [txtRecBtnOn]
+    cmp dword [isRecording], 0
+    je .dw_act_rc
+    mov r10d, COL_PURPHI
+    lea rbp, [txtRecBtnOff]
+.dw_act_rc:
+    call fill_rect
+    mov ecx, 13
+    mov edx, r14d
+    mov r8, rbp
+    mov r9d, 11
+    mov r10d, COL_WHITE
+    call draw_text
+
+    mov ecx, 25 * CHAR_W
+    mov edx, r15d
+    mov r8d, 11 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_HDR_ON
+    call fill_rect
+    mov ecx, 25
+    mov edx, r14d
+    lea r8, [seWActBar + 25]
+    mov r9d, 11
+    mov r10d, COL_WHITE
+    call draw_text
+
+    mov ecx, 37 * CHAR_W
+    mov edx, r15d
+    mov r8d, 10 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_HDR_OFF
+    call fill_rect
+    mov ecx, 37
+    mov edx, r14d
+    lea r8, [seWActBar + 37]
+    mov r9d, 10
+    mov r10d, COL_WHITE
+    call draw_text
+
+    mov ecx, 48 * CHAR_W
+    mov edx, r15d
+    mov r8d, 11 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_HDR_OFF
+    lea rbp, [txtWLoopOff]
+    test r12d, r12d
+    jz .dw_act_lp
+    lea rdx, [sampLoopEndTbl]
+    cmp [rdx + rbx*4], r13d
+    ja .dw_act_lp
+    mov r10d, COL_HDR_ON
+    lea rbp, [txtWLoopOn]
+.dw_act_lp:
+    call fill_rect
+    mov ecx, 48
+    mov edx, r14d
+    mov r8, rbp
+    mov r9d, 11
+    mov r10d, COL_WHITE
+    call draw_text
+
+    mov ecx, 60 * CHAR_W
+    mov edx, r15d
+    mov r8d, 15 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_HDR_ON
+    call fill_rect
+    mov ecx, 60
+    mov edx, r14d
+    lea r8, [seWActBar + 60]
+    mov r9d, 15
+    mov r10d, COL_WHITE
+    call draw_text
+
+    mov ecx, 76 * CHAR_W
+    mov edx, r15d
+    mov r8d, 13 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_PURP
+    call fill_rect
+    mov ecx, 76
+    mov edx, r14d
+    lea r8, [seWActBar + 76]
+    mov r9d, 13
+    mov r10d, COL_WHITE
+    call draw_text
+
+    mov ecx, 90 * CHAR_W
+    mov edx, r15d
+    mov r8d, 13 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_HDR_OFF
+    call fill_rect
+    mov ecx, 90
+    mov edx, r14d
+    lea r8, [seWActBar + 90]
+    mov r9d, 13
+    mov r10d, COL_WHITE
+    call draw_text
+
+    ; --- Zeile seFxRow: 7 destruktive Bearbeitungs-Buttons ---
+    mov ecx, 1
+    mov edx, [seFxRow]
+    lea r8, [seWFxBar + 1]
+    mov r9d, 12
+    mov r10d, COL_TEAL
+    call draw_text
+
+    xor edi, edi
+.dw_fx_loop:
+    lea rsi, [seWFxBtnPos]
+    movzx r14d, byte [rsi + rdi*2 + 0]
+    movzx r15d, byte [rsi + rdi*2 + 1]
+
+    mov ecx, r14d
+    imul ecx, CHAR_W
+    mov edx, [seFxRow]
+    imul edx, CHAR_H
+    mov r8d, r15d
+    imul r8d, CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_BEAT
+    test r12d, r12d
+    jz .dw_fx_bg
+    mov r10d, COL_HDR_ON
+.dw_fx_bg:
+    call fill_rect
+
+    mov ecx, r14d
+    mov edx, [seFxRow]
+    lea r8, [seWFxBar]
+    add r8, r14
+    mov r9d, r15d
+    mov r10d, COL_MUTED
+    test r12d, r12d
+    jz .dw_fx_tx
+    mov r10d, COL_WHITE
+.dw_fx_tx:
+    call draw_text
+
+    inc edi
+    cmp edi, 7
+    jb .dw_fx_loop
+
+    ; ========================================================================
+    ; ZWEI GETRENNTE BOXEN NEBENEINANDER: LINKS = SAMPLE-FX, RECHTS = SYNTH
+    ; ========================================================================
+    mov ebp, [seRecRow]
+    dec ebp
+    sub ebp, [sePanelRow]               ; panelRows (21 oder 30)
+    imul ebp, CHAR_H                    ; panelH in Pixeln
+
+    ; --- LINKE BOX (Spalten 1..60): SAMPLE-FX ---
+    mov ecx, 1 * CHAR_W
+    mov edx, [sePanelRow]
+    imul edx, CHAR_H
+    mov r8d, 60 * CHAR_W
+    mov r9d, ebp
+    mov r10d, COL_HDR_ON
+    cmp dword [seMode], 1
+    je .dw_lb_fr
+    mov r10d, COL_BEAT
+.dw_lb_fr:
+    call fill_rect
+
+    mov ecx, 1 * CHAR_W + 3
+    mov edx, [sePanelRow]
+    imul edx, CHAR_H
+    add edx, 3
+    mov r8d, 60 * CHAR_W - 6
+    lea r9d, [rbp - 6]
+    mov r10d, COL_BLACK
+    call fill_rect
+
+    mov ecx, 1 * CHAR_W
+    mov edx, [sePanelRow]
+    imul edx, CHAR_H
+    mov r8d, 60 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_HDR_ON
+    cmp dword [seMode], 1
+    je .dw_lb_hd
+    mov r10d, COL_HDR_OFF
+.dw_lb_hd:
+    call fill_rect
+
+    mov ecx, 2
+    mov edx, [sePanelRow]
+    lea r8, [seWSmpHdr]
+    mov r9d, 58
+    mov r10d, COL_WHITE
+    call draw_text
+
+    ; Statuszeile Sample-FX (sePanelRow + 2)
+    lea r8, [seWSmpNo]
+    mov r10d, COL_PURPHI
+    lea rdx, [slotOrigLen]
+    cmp dword [rdx + rbx*4], 0
+    jne .dw_smp_has
+    test r12d, r12d
+    jz .dw_smp_st
+    lea r8, [seWSmpPcm]
+    mov r10d, COL_TEAL
+    jmp .dw_smp_st
+.dw_smp_has:
+    lea r8, [seWSmpOk]
+    mov r10d, COL_CYAN
+.dw_smp_st:
+    mov ecx, 3
+    mov edx, [sePanelRow]
+    add edx, 2
+    mov r9d, 57
+    call draw_text
+
+    ; --- RECHTE BOX (Spalten 63..122): SYNTHESIZER ---
+    mov ecx, 63 * CHAR_W
+    mov edx, [sePanelRow]
+    imul edx, CHAR_H
+    mov r8d, 60 * CHAR_W
+    mov r9d, ebp
+    mov r10d, COL_PURPHI
+    cmp dword [seMode], 0
+    je .dw_rb_fr
+    mov r10d, COL_BEAT
+.dw_rb_fr:
+    call fill_rect
+
+    mov ecx, 63 * CHAR_W + 3
+    mov edx, [sePanelRow]
+    imul edx, CHAR_H
+    add edx, 3
+    mov r8d, 60 * CHAR_W - 6
+    lea r9d, [rbp - 6]
+    mov r10d, COL_BLACK
+    call fill_rect
+
+    mov ecx, 63 * CHAR_W
+    mov edx, [sePanelRow]
+    imul edx, CHAR_H
+    mov r8d, 60 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_PURP
+    cmp dword [seMode], 0
+    je .dw_rb_hd
+    mov r10d, COL_HDR_OFF
+.dw_rb_hd:
+    call fill_rect
+
+    mov ecx, 64
+    mov edx, [sePanelRow]
+    lea r8, [seWSynHdr]
+    mov r9d, 58
+    mov r10d, COL_WHITE
+    call draw_text
+
+    ; Wellenform-Buttons & Pulsbreite (sePanelRow + 2)
+    mov r15d, [sePanelRow]
+    add r15d, 2
+
+    mov ecx, 65
+    mov edx, r15d
+    lea r8, [seWSynWave]
+    mov r9d, 6
+    mov r10d, COL_TEAL
+    call draw_text
+
+    xor edi, edi
+.dw_wb_loop:
+    imul r14d, edi, 8
+    add r14d, 72
+    mov ecx, r14d
+    imul ecx, CHAR_W
+    mov edx, r15d
+    imul edx, CHAR_H
+    mov r8d, 7 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_BEAT
+    cmp edi, [seWave]
+    jne .dw_wb_bg
+    mov r10d, COL_CURSOR
+.dw_wb_bg:
+    call fill_rect
+
+    mov ecx, r14d
+    mov edx, r15d
+    lea r8, [seWSynWave + 7]
+    imul eax, edi, 8
+    add r8, rax
+    mov r9d, 7
+    mov r10d, COL_NOTE
+    cmp edi, [seWave]
+    jne .dw_wb_tx
+    mov r10d, COL_BLACK
+.dw_wb_tx:
+    call draw_text
+
+    inc edi
+    cmp edi, 5
+    jb .dw_wb_loop
+
+    mov eax, [sePulse]
+    lea r8, [seWSynWave + 51]
+    call fmt_dec3
+    mov ecx, 113
+    mov edx, r15d
+    lea r8, [seWSynWave + 48]
+    mov r9d, 8
+    mov r10d, COL_CYAN
+    call draw_text
+
+    ; --- 9 GETRENNTE SLIDER LINKS (SAMPLE-FX) & RECHTS (SYNTHESIZER) ---
+    xor edi, edi
+.dw_sl_loop:
+    mov r14d, edi
+    imul r14d, [seSlStep]
+    add r14d, [sePanelRow]
+    add r14d, 4                         ; Bildschirmzeile dieses Sliders
+
+    ; === LINKS: SAMPLE-FX SLIDER i ===
+    imul eax, edi, 12
+    lea r8, [seSmpParamNames]
+    add r8, rax
+    mov ecx, 3
+    mov edx, r14d
+    mov r9d, 12
+    mov r10d, COL_NOTE
+    call draw_text
+
+    mov ecx, 16 * CHAR_W
+    mov edx, r14d
+    imul edx, CHAR_H
+    add edx, 1
+    mov r8d, 30 * CHAR_W
+    mov r9d, CHAR_H - 2
+    mov r10d, COL_BEAT
+    call fill_rect
+
+    lea rsi, [seSmpParams]
+    mov r15d, [rsi + rdi*4]
+    imul eax, r15d, 360
+    xor edx, edx
+    mov ecx, 100
+    div ecx
+    test eax, eax
+    jz .dw_sl_lnb
+    mov ecx, 16 * CHAR_W
+    mov edx, r14d
+    imul edx, CHAR_H
+    add edx, 1
+    mov r8d, eax
+    mov r9d, CHAR_H - 2
+    mov r10d, COL_CYAN
+    cmp edi, 4
+    jb .dw_sl_lcd
+    mov r10d, COL_TEAL
+    cmp edi, 8
+    jb .dw_sl_lcd
+    mov r10d, COL_NOTE
+.dw_sl_lcd:
+    cmp dword [seDragMode], 4
+    jne .dw_sl_ldr
+    cmp edi, [seDragParam]
+    jne .dw_sl_ldr
+    mov r10d, COL_CURSOR
+.dw_sl_ldr:
+    call fill_rect
+.dw_sl_lnb:
+
+    mov ecx, 47 * CHAR_W
+    mov edx, r14d
+    imul edx, CHAR_H
+    mov r8d, 3 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_HDR_OFF
+    call fill_rect
+    mov ecx, 47
+    mov edx, r14d
+    lea r8, [txtMinus]
+    mov r9d, 3
+    mov r10d, COL_WHITE
+    call draw_text
+
+    mov eax, r15d
+    lea r8, [lineBuf]
+    call fmt_dec3
+    mov ecx, 51
+    mov edx, r14d
+    lea r8, [lineBuf]
+    mov r9d, 3
+    mov r10d, COL_WHITE
+    call draw_text
+
+    mov ecx, 55 * CHAR_W
+    mov edx, r14d
+    imul edx, CHAR_H
+    mov r8d, 3 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_HDR_ON
+    call fill_rect
+    mov ecx, 55
+    mov edx, r14d
+    lea r8, [txtPlus]
+    mov r9d, 3
+    mov r10d, COL_WHITE
+    call draw_text
+
+    ; === RECHTS: SYNTHESIZER SLIDER i ===
+    imul eax, edi, 12
+    lea r8, [seSynParamNames]
+    add r8, rax
+    mov ecx, 65
+    mov edx, r14d
+    mov r9d, 12
+    mov r10d, COL_NOTE
+    call draw_text
+
+    mov ecx, 78 * CHAR_W
+    mov edx, r14d
+    imul edx, CHAR_H
+    add edx, 1
+    mov r8d, 30 * CHAR_W
+    mov r9d, CHAR_H - 2
+    mov r10d, COL_BEAT
+    call fill_rect
+
+    lea rsi, [seSynthParams]
+    mov r15d, [rsi + rdi*4]
+    imul eax, r15d, 360
+    xor edx, edx
+    mov ecx, 100
+    div ecx
+    test eax, eax
+    jz .dw_sl_rnb
+    mov ecx, 78 * CHAR_W
+    mov edx, r14d
+    imul edx, CHAR_H
+    add edx, 1
+    mov r8d, eax
+    mov r9d, CHAR_H - 2
+    mov r10d, COL_PURPHI
+    cmp edi, 4
+    jb .dw_sl_rcd
+    mov r10d, COL_CYAN
+    cmp edi, 8
+    jb .dw_sl_rcd
+    mov r10d, COL_NOTE
+.dw_sl_rcd:
+    cmp dword [seDragMode], 5
+    jne .dw_sl_rdr
+    cmp edi, [seDragParam]
+    jne .dw_sl_rdr
+    mov r10d, COL_CURSOR
+.dw_sl_rdr:
+    call fill_rect
+.dw_sl_rnb:
+
+    mov ecx, 109 * CHAR_W
+    mov edx, r14d
+    imul edx, CHAR_H
+    mov r8d, 3 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_HDR_OFF
+    call fill_rect
+    mov ecx, 109
+    mov edx, r14d
+    lea r8, [txtMinus]
+    mov r9d, 3
+    mov r10d, COL_WHITE
+    call draw_text
+
+    mov eax, r15d
+    lea r8, [lineBuf]
+    call fmt_dec3
+    mov ecx, 113
+    mov edx, r14d
+    lea r8, [lineBuf]
+    mov r9d, 3
+    mov r10d, COL_WHITE
+    call draw_text
+
+    mov ecx, 117 * CHAR_W
+    mov edx, r14d
+    imul edx, CHAR_H
+    mov r8d, 3 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_HDR_ON
+    call fill_rect
+    mov ecx, 117
+    mov edx, r14d
+    lea r8, [txtPlus]
+    mov r9d, 3
+    mov r10d, COL_WHITE
+    call draw_text
+
+    inc edi
+    cmp edi, 9
+    jb .dw_sl_loop
+
+    ; --- Zeile seBtnRow: Links Sample-FX Buttons, Rechts 6 Synth-Presets ---
+    mov r14d, [seBtnRow]
+    mov r15d, r14d
+    imul r15d, CHAR_H
+
+    ; [Sample-FX anwenden] (Spalten 3..22)
+    mov ecx, 3 * CHAR_W
+    mov edx, r15d
+    mov r8d, 20 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_CYAN
+    call fill_rect
+    mov ecx, 3
+    mov edx, r14d
+    lea r8, [txtWSmpApp]
+    mov r9d, 20
+    mov r10d, COL_BLACK
+    call draw_text
+
+    ; [Original wiederherstellen] (Spalten 25..51)
+    mov ecx, 25 * CHAR_W
+    mov edx, r15d
+    mov r8d, 27 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_HDR_OFF
+    mov ebp, COL_MUTED
+    lea rdx, [slotOrigLen]
+    cmp dword [rdx + rbx*4], 0
+    je .dw_or_bg
+    mov r10d, COL_HDR_ON
+    mov ebp, COL_WHITE
+.dw_or_bg:
+    call fill_rect
+    mov ecx, 25
+    mov edx, r14d
+    lea r8, [txtWOrigRes]
+    mov r9d, 27
+    mov r10d, ebp
+    call draw_text
+
+    ; 6 Synth-Presets (Spalten 65..121)
+    xor edi, edi
+.dw_pre_loop:
+    lea rsi, [seWPreBtnPos]
+    movzx ecx, byte [rsi + rdi*2 + 0]
+    movzx r8d, byte [rsi + rdi*2 + 1]
+    push rcx
+    push r8
+    imul ecx, CHAR_W
+    mov edx, r15d
+    imul r8d, CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_HDR_ON
+    call fill_rect
+    pop r8
+    pop rcx
+    mov edx, r14d
+    mov r9d, r8d
+    lea r8, [seWSynPre]
+    lea eax, [rcx - 65]
+    add r8, rax
+    mov r10d, COL_WHITE
+    call draw_text
+    inc edi
+    cmp edi, 6
+    jb .dw_pre_loop
+
+    ; --- Zeile seBtnRow + 2: Links Tipp, Rechts [Synth erzeugen] [Auto-Loop] [Live-Edit] ---
+    add r14d, 2
+    mov r15d, r14d
+    imul r15d, CHAR_H
+
+    mov ecx, 3
+    mov edx, r14d
+    lea r8, [seWSmpTip]
+    mov r9d, 57
+    mov r10d, COL_TEAL
+    call draw_text
+
+    ; [Synth erzeugen] (Spalten 65..80)
+    mov ecx, 65 * CHAR_W
+    mov edx, r15d
+    mov r8d, 16 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_PURPHI
+    call fill_rect
+    mov ecx, 65
+    mov edx, r14d
+    lea r8, [txtWSynGen]
+    mov r9d, 16
+    mov r10d, COL_BLACK
+    call draw_text
+
+    ; [Auto-Loop: AN/AUS] (Spalten 82..97)
+    mov ecx, 82 * CHAR_W
+    mov edx, r15d
+    mov r8d, 16 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_HDR_OFF
+    lea rbp, [txtWAlOff]
+    cmp dword [seAutoLoop], 0
+    je .dw_al_b
+    mov r10d, COL_HDR_ON
+    lea rbp, [txtWAlOn]
+.dw_al_b:
+    call fill_rect
+    mov ecx, 82
+    mov edx, r14d
+    mov r8, rbp
+    mov r9d, 16
+    mov r10d, COL_WHITE
+    call draw_text
+
+    ; [Live-Edit: AN/AUS] (Spalten 99..114)
+    mov ecx, 99 * CHAR_W
+    mov edx, r15d
+    mov r8d, 16 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_HDR_OFF
+    lea rbp, [txtWLiveOff]
+    mov esi, COL_WHITE
+    cmp dword [seLiveSynth], 0
+    je .dw_lv_b
+    mov r10d, COL_CURSOR
+    lea rbp, [txtWLiveOn]
+    mov esi, COL_BLACK
+.dw_lv_b:
+    call fill_rect
+    mov ecx, 99
+    mov edx, r14d
+    mov r8, rbp
+    mov r9d, 16
+    mov r10d, esi
+    call draw_text
+
+    ; Aufnahme-Banner wenn aktiv (seBtnRow + 4)
+    cmp dword [isRecording], 0
+    je .dw_rec_bar
+    add r14d, 2
+    mov r15d, r14d
+    imul r15d, CHAR_H
+    mov ecx, 2 * CHAR_W
+    mov edx, r15d
+    mov r8d, 120 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_PURPHI
+    call fill_rect
+    mov ecx, 2
+    mov edx, r14d
+    lea r8, [seWRecBan]
+    mov r9d, 120
+    mov r10d, COL_WHITE
+    call draw_text
+
+.dw_rec_bar:
+    ; --- Zeile seRecRow: Mikrofon-Auswahl & grosser 3-Zonen-Live-VU ---
+    mov r14d, [seRecRow]
+    mov r15d, r14d
+    imul r15d, CHAR_H
+
+    mov ecx, 1
+    mov edx, r14d
+    lea r8, [txtMicLbl]
+    mov r9d, 4
+    mov r10d, COL_TEAL
+    call draw_text
+
+    mov ecx, 6 * CHAR_W
+    mov edx, r15d
+    mov r8d, 3 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_HDR_OFF
+    call fill_rect
+    mov ecx, 6
+    mov edx, r14d
+    lea r8, [txtDevPrev]
+    mov r9d, 3
+    mov r10d, COL_WHITE
+    call draw_text
+
+    mov ecx, 10 * CHAR_W
+    mov edx, r15d
+    mov r8d, 36 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_BLACK
+    call fill_rect
+    mov ecx, 10
+    mov edx, r14d
+    lea r8, [seRecDevName]
+    mov r9d, 28
+    mov r10d, COL_CYAN
+    cmp dword [seRecDevCount], 0
+    jne .dw_rd_c
+    mov r10d, COL_PURPHI
+.dw_rd_c:
+    call draw_text
+
+    mov ecx, 47 * CHAR_W
+    mov edx, r15d
+    mov r8d, 3 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_HDR_ON
+    call fill_rect
+    mov ecx, 47
+    mov edx, r14d
+    lea r8, [txtDevNext]
+    mov r9d, 3
+    mov r10d, COL_WHITE
+    call draw_text
+
+    mov ecx, 52
+    mov edx, r14d
+    lea r8, [txtVuLbl]
+    mov r9d, 3
+    mov r10d, COL_TEAL
+    call draw_text
+
+    ; VU-Rahmen (Spalten 56..111 = 56*12 = 672 px breit)
+    mov ecx, 56 * CHAR_W
+    lea edx, [r15 + 1]
+    mov r8d, 56 * CHAR_W
+    mov r9d, CHAR_H - 2
+    mov r10d, COL_BLACK
+    call fill_rect
+
+    mov ecx, 56 * CHAR_W
+    lea edx, [r15 + 2]
+    mov r8d, 56 * CHAR_W
+    mov r9d, CHAR_H - 4
+    mov r10d, COL_BEAT
+    call fill_rect
+
+    cmp dword [isRecording], 0
+    je .dw_vu_idle
+
+    mov eax, [recVuLevel]
+    imul eax, 672
+    xor edx, edx
+    mov ecx, 127
+    div ecx
+    cmp eax, 672
+    jbe .dw_vu_w
+    mov eax, 672
+.dw_vu_w:
+    mov ebp, eax
+    test ebp, ebp
+    jz .dw_vu_pk
+
+    mov r8d, ebp
+    cmp r8d, 450
+    jbe .dw_vu_z1
+    mov r8d, 450
+.dw_vu_z1:
+    mov ecx, 56 * CHAR_W
+    lea edx, [r15 + 2]
+    mov r9d, CHAR_H - 4
+    mov r10d, COL_CYAN
+    call fill_rect
+
+    cmp ebp, 450
+    jbe .dw_vu_pk
+    mov r8d, ebp
+    cmp r8d, 590
+    jbe .dw_vu_z2
+    mov r8d, 590
+.dw_vu_z2:
+    sub r8d, 450
+    mov ecx, 56 * CHAR_W + 450
+    lea edx, [r15 + 2]
+    mov r9d, CHAR_H - 4
+    mov r10d, COL_CURSOR
+    call fill_rect
+
+    cmp ebp, 590
+    jbe .dw_vu_pk
+    mov r8d, ebp
+    sub r8d, 590
+    mov ecx, 56 * CHAR_W + 590
+    lea edx, [r15 + 2]
+    mov r9d, CHAR_H - 4
+    mov r10d, COL_PURPHI
+    call fill_rect
+
+.dw_vu_pk:
+    mov eax, [recVuPeakHold]
+    cmp eax, 3
+    jb .dw_vu_tm
+    imul eax, 670
+    xor edx, edx
+    mov ecx, 127
+    div ecx
+    cmp eax, 670
+    jbe .dw_vu_po
+    mov eax, 670
+.dw_vu_po:
+    lea ecx, [rax + 56 * CHAR_W]
+    lea edx, [r15 + 1]
+    mov r8d, 2
+    mov r9d, CHAR_H - 2
+    mov r10d, COL_WHITE
+    cmp dword [recVuPeakHold], 122
+    jb .dw_vu_pd
+    mov r10d, COL_PURPHI
+.dw_vu_pd:
+    call fill_rect
+
+.dw_vu_tm:
+    mov eax, [recWritePos]
+    imul rax, 10
+    xor edx, edx
+    mov ecx, 22050
+    div rcx
+    cmp eax, 59
+    jbe .dw_vt_ok
+    mov eax, 59
+.dw_vt_ok:
+    xor edx, edx
+    mov ecx, 10
+    div ecx
+    add al, '0'
+    mov [recTimeTxt + 0], al
+    mov byte [recTimeTxt + 1], '.'
+    add dl, '0'
+    mov [recTimeTxt + 2], dl
+    mov dword [recTimeTxt + 3], '9.5/'
+
+    mov ecx, 114
+    mov edx, r14d
+    lea r8, [recTimeTxt]
+    mov r9d, 7
+    mov r10d, COL_CYAN
+    cmp dword [recVuPeakHold], 122
+    jb .dw_vt_dr
+    mov r10d, COL_PURPHI
+.dw_vt_dr:
+    call draw_text
+    jmp .dw_bot
+
+.dw_vu_idle:
+    lea r8, [txtRecReady]
+    mov r10d, COL_TEAL
+    cmp dword [seRecDevCount], 0
+    jne .dw_vi_dr
+    lea r8, [txtRecNoDev]
+    mov r10d, COL_PURPHI
+.dw_vi_dr:
+    mov ecx, 114
+    mov edx, r14d
+    mov r9d, 7
+    call draw_text
+
+.dw_bot:
+    ; --- Zeile botBarRow: Widescreen-Fusszeile ---
+    mov r14d, [botBarRow]
+    mov r15d, r14d
+    imul r15d, CHAR_H
+
+    mov al, bl
+    lea r8, [seWBotBar + 6]
+    call fmt_hex2
+    mov eax, [curOct]
+    add al, '2'
+    mov [seWBotBar + 17], al
+
+    xor ecx, ecx
+    mov edx, r14d
+    lea r8, [seWBotBar]
+    mov r9d, 123
+    mov r10d, COL_CYAN
+    call draw_text
+
+    mov ecx, 119 * CHAR_W
+    mov edx, r15d
+    mov r8d, 3 * CHAR_W
+    mov r9d, CHAR_H
+    mov r10d, COL_PURP
+    cmp dword [showHelp], 0
+    je .dw_qbg
+    mov r10d, COL_PURPHI
+.dw_qbg:
+    call fill_rect
+
+    mov ecx, 119
+    mov edx, r14d
+    lea r8, [seWBotBar + 119]
+    mov r9d, 3
+    mov r10d, COL_WHITE
+    call draw_text
+
+.ds_epilog:
     add rsp, 0x58
     pop r15
     pop r14
